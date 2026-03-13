@@ -1,0 +1,7 @@
+bounded_context: "platform"
+service_id: "svc-idn-keycloak-ldap"
+application_id: "app.idn.keycloak-ldap"
+data_owner_pattern: "db_idn_keycloak_ldap_prod"
+event_namespace: "evt.idn.identity"
+owning_squad: "Identity Platform Squad"
+wave: "0"
