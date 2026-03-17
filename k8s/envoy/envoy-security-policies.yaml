@@ -362,47 +362,91 @@ spec:
   resolution: DNS
 
 ---
-apiVersion: v1
-kind: Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
 metadata:
   name: banking-tls-secret
   namespace: istio-system
   labels:
     app: banking-envoy
     compliance: fapi-2.0
-type: kubernetes.io/tls
-data:
-  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0=  # Base64 encoded certificate
-  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0=  # Base64 encoded private key
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: platform-secrets
+    kind: ClusterSecretStore
+  target:
+    name: banking-tls-secret
+    creationPolicy: Owner
+    template:
+      type: kubernetes.io/tls
+  data:
+  - secretKey: tls.crt
+    remoteRef:
+      key: /fintechbankx/mesh/tls
+      property: certificate
+  - secretKey: tls.key
+    remoteRef:
+      key: /fintechbankx/mesh/tls
+      property: private_key
 
 ---
-apiVersion: v1
-kind: Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
 metadata:
   name: banking-tls-certs
   namespace: banking
   labels:
     app: banking-envoy
     compliance: fapi-2.0
-type: Opaque
-data:
-  banking-gateway.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0=  # Base64 encoded gateway certificate
-  banking-api.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0=  # Base64 encoded API certificate
-  ca-certificates.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0=  # Base64 encoded CA bundle
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: platform-secrets
+    kind: ClusterSecretStore
+  target:
+    name: banking-tls-certs
+    creationPolicy: Owner
+  data:
+  - secretKey: banking-gateway.crt
+    remoteRef:
+      key: /fintechbankx/envoy/certs
+      property: gateway_certificate
+  - secretKey: banking-api.crt
+    remoteRef:
+      key: /fintechbankx/envoy/certs
+      property: api_certificate
+  - secretKey: ca-certificates.crt
+    remoteRef:
+      key: /fintechbankx/envoy/certs
+      property: ca_bundle
 
 ---
-apiVersion: v1
-kind: Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
 metadata:
   name: banking-tls-private-key
   namespace: banking
   labels:
     app: banking-envoy
     compliance: fapi-2.0
-type: Opaque
-data:
-  banking-gateway.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0=  # Base64 encoded gateway private key
-  banking-api.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCi0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0=  # Base64 encoded API private key
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: platform-secrets
+    kind: ClusterSecretStore
+  target:
+    name: banking-tls-private-key
+    creationPolicy: Owner
+  data:
+  - secretKey: banking-gateway.key
+    remoteRef:
+      key: /fintechbankx/envoy/keys
+      property: gateway_private_key
+  - secretKey: banking-api.key
+    remoteRef:
+      key: /fintechbankx/envoy/keys
+      property: api_private_key
 
 ---
 apiVersion: networking.istio.io/v1alpha3
