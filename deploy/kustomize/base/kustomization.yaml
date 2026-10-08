@@ -19,6 +19,7 @@ resources:
   - serviceaccounts.yaml
   - keycloak.yaml
   - externalsecrets.yaml
+  - jgroups-service.yaml
   - pdb.yaml
   - hpa.yaml
   - realm-import/job.yaml
