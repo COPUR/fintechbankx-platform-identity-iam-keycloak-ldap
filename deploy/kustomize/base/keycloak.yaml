@@ -76,6 +76,15 @@ spec:
       value: info
     - name: spi-events-listener--jboss-logging--error-level
       value: warn
+    # Admin event lines include the changed representation. The observability
+    # alert KeycloakServiceAccountAdminEventOutOfScope (Loki rule
+    # identity-admin-events) needs it to tell a user disable or a credential
+    # change from other user updates. Representations can carry personal data
+    # (username, email, first and last name, user attributes such as
+    # customer_id); they go to the central log sink, so the collector's
+    # privacy processors and the Loki retention and access rules apply to them.
+    - name: spi-events-listener--jboss-logging--include-representation
+      value: "true"
 
   tracing:
     enabled: true
