@@ -57,7 +57,185 @@
   ],
   "adminEventsEnabled": true,
   "adminEventsDetailsEnabled": true,
+  "clientScopes": [
+    {
+      "name": "customer-id",
+      "description": "Adds the end user's customer_id (customer profile id) to access tokens; absent for staff and service accounts.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "customer_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "customer_id",
+            "claim.name": "customer_id",
+            "jsonType.label": "String",
+            "multivalued": "false",
+            "aggregate.attrs": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": [
+    "basic",
+    "web-origins",
+    "acr",
+    "profile",
+    "roles",
+    "email",
+    "customer-id"
+  ],
+  "userProfile": {
+    "attributes": [
+      {
+        "name": "username",
+        "displayName": "${username}",
+        "validations": {
+          "length": {
+            "min": 3,
+            "max": 255
+          },
+          "username-prohibited-characters": {},
+          "up-username-not-idn-homograph": {}
+        },
+        "permissions": {
+          "view": [
+            "admin",
+            "user"
+          ],
+          "edit": [
+            "admin",
+            "user"
+          ]
+        },
+        "multivalued": false
+      },
+      {
+        "name": "email",
+        "displayName": "${email}",
+        "validations": {
+          "email": {},
+          "length": {
+            "max": 255
+          }
+        },
+        "required": {
+          "roles": [
+            "user"
+          ]
+        },
+        "permissions": {
+          "view": [
+            "admin",
+            "user"
+          ],
+          "edit": [
+            "admin",
+            "user"
+          ]
+        },
+        "multivalued": false
+      },
+      {
+        "name": "firstName",
+        "displayName": "${firstName}",
+        "validations": {
+          "length": {
+            "max": 255
+          },
+          "person-name-prohibited-characters": {}
+        },
+        "required": {
+          "roles": [
+            "user"
+          ]
+        },
+        "permissions": {
+          "view": [
+            "admin",
+            "user"
+          ],
+          "edit": [
+            "admin",
+            "user"
+          ]
+        },
+        "multivalued": false
+      },
+      {
+        "name": "lastName",
+        "displayName": "${lastName}",
+        "validations": {
+          "length": {
+            "max": 255
+          },
+          "person-name-prohibited-characters": {}
+        },
+        "required": {
+          "roles": [
+            "user"
+          ]
+        },
+        "permissions": {
+          "view": [
+            "admin",
+            "user"
+          ],
+          "edit": [
+            "admin",
+            "user"
+          ]
+        },
+        "multivalued": false
+      },
+      {
+        "name": "customer_id",
+        "displayName": "Customer id",
+        "validations": {
+          "length": {
+            "min": 1,
+            "max": 64
+          },
+          "pattern": {
+            "pattern": "^[A-Za-z0-9-]+$",
+            "error-message": "customer_id: letters, digits and hyphens only"
+          }
+        },
+        "permissions": {
+          "view": [
+            "admin",
+            "user"
+          ],
+          "edit": [
+            "admin"
+          ]
+        },
+        "multivalued": false,
+        "group": "user-metadata"
+      }
+    ],
+    "groups": [
+      {
+        "name": "user-metadata",
+        "displayHeader": "User metadata",
+        "displayDescription": "Attributes, which refer to user metadata"
+      }
+    ]
+  },
   "attributes": {
+    "userProfileEnabled": "true",
     "parRequestUriLifetime": "60",
     "adminEventsExpiration": "7776000",
     "frontendUrl": "",
@@ -939,7 +1117,8 @@
         "acr",
         "profile",
         "roles",
-        "email"
+        "email",
+        "customer-id"
       ],
       "optionalClientScopes": [
         "offline_access"
@@ -1056,7 +1235,8 @@
         "acr",
         "profile",
         "roles",
-        "email"
+        "email",
+        "customer-id"
       ],
       "optionalClientScopes": [
         "offline_access"
@@ -1195,7 +1375,8 @@
       "defaultClientScopes": [
         "basic",
         "acr",
-        "roles"
+        "roles",
+        "customer-id"
       ],
       "optionalClientScopes": []
     },

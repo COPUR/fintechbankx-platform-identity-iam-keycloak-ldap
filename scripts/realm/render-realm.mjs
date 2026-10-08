@@ -45,6 +45,48 @@ const audienceMappers = (audiences) => audiences.map((aud) => ({
     "lightweight.claim": "false"
   }
 }));
+// End-user id claim for resource servers: user attribute customer_id (set by
+// customer onboarding, admin-edit only) -> access-token claim customer_id.
+// Default scope for the channel clients, the TPP template and, via
+// defaultDefaultClientScopes, every TPP client created by registration.
+const CUSTOMER_ID_SCOPE = "customer-id";
+const customerIdScope = {
+  name: CUSTOMER_ID_SCOPE,
+  description: "Adds the end user's customer_id (customer profile id) to access tokens; absent for staff and service accounts.",
+  protocol: "openid-connect",
+  attributes: { "include.in.token.scope": "false", "display.on.consent.screen": "false" },
+  protocolMappers: [{
+    name: "customer_id",
+    protocol: "openid-connect",
+    protocolMapper: "oidc-usermodel-attribute-mapper",
+    consentRequired: false,
+    config: {
+      "user.attribute": "customer_id",
+      "claim.name": "customer_id",
+      "jsonType.label": "String",
+      "multivalued": "false",
+      "aggregate.attrs": "false",
+      "access.token.claim": "true",
+      "id.token.claim": "false",
+      "userinfo.token.claim": "true",
+      "introspection.token.claim": "true",
+      "lightweight.claim": "false"
+    }
+  }]
+};
+const ALL_USERS = { view: ["admin", "user"], edit: ["admin", "user"] };
+// Full user-profile configuration (Keycloak 26 defaults plus customer_id);
+// keycloak-config-cli replaces the realm's profile with it.
+const userProfile = {
+  attributes: [
+    { name: "username", displayName: "${username}", validations: { length: { min: 3, max: 255 }, "username-prohibited-characters": {}, "up-username-not-idn-homograph": {} }, permissions: ALL_USERS, multivalued: false },
+    { name: "email", displayName: "${email}", validations: { email: {}, length: { max: 255 } }, required: { roles: ["user"] }, permissions: ALL_USERS, multivalued: false },
+    { name: "firstName", displayName: "${firstName}", validations: { length: { max: 255 }, "person-name-prohibited-characters": {} }, required: { roles: ["user"] }, permissions: ALL_USERS, multivalued: false },
+    { name: "lastName", displayName: "${lastName}", validations: { length: { max: 255 }, "person-name-prohibited-characters": {} }, required: { roles: ["user"] }, permissions: ALL_USERS, multivalued: false },
+    { name: "customer_id", displayName: "Customer id", validations: { length: { min: 1, max: 64 }, pattern: { pattern: "^[A-Za-z0-9-]+$", "error-message": "customer_id: letters, digits and hyphens only" } }, permissions: { view: ["admin", "user"], edit: ["admin"] }, multivalued: false, group: "user-metadata" }
+  ],
+  groups: [{ name: "user-metadata", displayHeader: "User metadata", displayDescription: "Attributes, which refer to user metadata" }]
+};
 const channel = Object.fromEntries(manifest.channelClients.map((c) => [c.clientId, c]));
 
 // Staff SSO clients (e.g. Grafana): confidential, authorization code + PKCE,
@@ -160,7 +202,7 @@ const publicClient = (clientId, name, redirectEnv, originEnv, logoutEnv) => ({
     "oidc.ciba.grant.enabled": "false"
   }, logoutEnv ? { "post.logout.redirect.uris": env(logoutEnv) } : {}),
   protocolMappers: audienceMappers(channel[clientId].audiences),
-  defaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email"],
+  defaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email", CUSTOMER_ID_SCOPE],
   optionalClientScopes: ["offline_access"]
 });
 
@@ -200,7 +242,7 @@ const tppTemplate = {
     "oidc.ciba.grant.enabled": "false"
   },
   protocolMappers: audienceMappers(channel["of-tpp-conformance-template"].audiences),
-  defaultClientScopes: ["basic", "acr", "roles"],
+  defaultClientScopes: ["basic", "acr", "roles", CUSTOMER_ID_SCOPE],
   optionalClientScopes: []
 };
 
@@ -282,7 +324,12 @@ const realm = {
   adminEventsEnabled: true,
   adminEventsDetailsEnabled: true,
 
+  clientScopes: [customerIdScope],
+  defaultDefaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email", CUSTOMER_ID_SCOPE],
+  userProfile,
+
   attributes: {
+    userProfileEnabled: "true",
     parRequestUriLifetime: "60",
     adminEventsExpiration: "7776000",
     frontendUrl: "",
