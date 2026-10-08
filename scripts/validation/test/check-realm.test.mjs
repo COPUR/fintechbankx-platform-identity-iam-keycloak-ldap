@@ -243,3 +243,46 @@ test("service accounts list realm-management: [] and the realm lists clientScope
   assert.ok(errors.some((e) => e.includes("svc-ln-loan-lifecycle: service account must list clientRoles realm-management: []")));
   assert.ok(errors.some((e) => e.includes("clientScopeMappings must be present")));
 });
+
+test("TPP tokens are DPoP-bound only: no mTLS-bound policy, profile or client", () => {
+  const input = fresh();
+  const policies = input.realm.clientPolicies.policies;
+  assert.ok(!policies.some((p) => p.name === "fbx-open-finance-tpp-fapi2-mtls"));
+  assert.ok(!policies.some((p) => (p.profiles || []).includes("fapi-2-security-profile")));
+  assert.ok(!JSON.stringify(input.realm).includes('"value":"mtls"'));
+  const mutate = (fn, expected) => {
+    const i = fresh();
+    fn(i);
+    const errors = checkRealm(i);
+    assert.ok(errors.some((e) => e.includes(expected)), `${expected} not in ${errors.join("; ")}`);
+  };
+  mutate((i) => { client(i, "of-tpp-conformance-template").attributes["fbx.tpp.token-binding"] = "mtls"; }, "of-tpp-conformance-template: fbx.tpp.token-binding must be dpop");
+  mutate((i) => { client(i, "of-tpp-conformance-template").attributes["tls.client.certificate.bound.access.tokens"] = "true"; }, "of-tpp-conformance-template: certificate-bound tokens are not supported");
+  mutate((i) => { client(i, "svc-ln-loan-lifecycle").attributes["tls.client.certificate.bound.access.tokens"] = "true"; }, "svc-ln-loan-lifecycle: certificate-bound tokens are not supported");
+  mutate((i) => { i.realm.clientPolicies.policies.push({ name: "x", enabled: true, conditions: [{ condition: "client-attributes", configuration: { attributes: JSON.stringify([{ key: "fbx.tpp.token-binding", value: "mtls" }]) } }], profiles: ["fapi-2-security-profile"] }); }, "client policy x: mTLS-bound tokens are not supported");
+  mutate((i) => { i.realm.clientPolicies.policies.push({ name: "y", enabled: true, conditions: [{ condition: "client-attributes", configuration: { attributes: JSON.stringify([{ key: "fbx.tpp.token-binding", value: "mtls" }]) } }], profiles: ["fapi-2-dpop-security-profile"] }); }, "client policy y: mTLS-bound tokens are not supported");
+  mutate((i) => { i.realm.clientPolicies.policies.push({ name: "z", enabled: true, conditions: [], profiles: ["fapi-2-security-profile"] }); }, "client policy z: mTLS-bound tokens are not supported");
+});
+
+test("no client may authenticate with client-x509 (TLS ends before Keycloak)", () => {
+  const input = fresh();
+  const authenticators = input.realm.clientProfiles.profiles.flatMap((p) => p.executors)
+    .filter((e) => e.executor === "secure-client-authenticator")
+    .flatMap((e) => e.configuration["allowed-client-authenticators"]);
+  assert.ok(!authenticators.includes("client-x509"));
+  input.realm.clientProfiles.profiles[0].executors[0].configuration["allowed-client-authenticators"].push("client-x509");
+  client(input, "svc-cmp-evidence").clientAuthenticatorType = "client-x509";
+  const errors = checkRealm(input);
+  assert.ok(errors.some((e) => e.includes("client profile fbx-service-client-baseline: client-x509 is not allowed")));
+  assert.ok(errors.some((e) => e.includes("svc-cmp-evidence: clientAuthenticatorType client-x509 is not allowed")));
+});
+
+test("TPP policies add a private_key_jwt-only client authentication profile", () => {
+  const input = fresh();
+  const prof = input.realm.clientProfiles.profiles.find((p) => p.name === "fbx-open-finance-tpp-client-auth");
+  assert.deepEqual(prof.executors[0].configuration["allowed-client-authenticators"], ["client-jwt"]);
+  for (const name of ["fbx-open-finance-tpp-fapi2-dpop", "fbx-open-finance-tpp-dynamic-registration"]) {
+    const p = input.realm.clientPolicies.policies.find((x) => x.name === name);
+    assert.deepEqual(p.profiles, ["fapi-2-dpop-security-profile", "fbx-open-finance-tpp-client-auth"]);
+  }
+});

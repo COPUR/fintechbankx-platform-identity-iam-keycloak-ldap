@@ -485,9 +485,9 @@ const realm = {
     profiles: [
       {
         name: "fbx-service-client-baseline",
-        description: "Machine-to-machine clients: client credentials only, no browser or password grants, no full scope.",
+        description: "Machine-to-machine clients: client credentials only, no browser or password grants, no full scope. No client-x509: TLS ends at the mesh, Keycloak never sees a client certificate.",
         executors: [
-          { executor: "secure-client-authenticator", configuration: { "allowed-client-authenticators": ["client-secret", "client-jwt", "client-x509"], "default-client-authenticator": "client-secret" } },
+          { executor: "secure-client-authenticator", configuration: { "allowed-client-authenticators": ["client-secret", "client-jwt"], "default-client-authenticator": "client-secret" } },
           { executor: "reject-implicit-grant", configuration: { "auto-configure": "true" } },
           { executor: "reject-ropc-grant", configuration: { "auto-configure": "true" } },
           { executor: "full-scope-disabled", configuration: { "auto-configure": "true" } }
@@ -501,6 +501,13 @@ const realm = {
           { executor: "pkce-enforcer", configuration: { "auto-configure": "true" } },
           { executor: "reject-implicit-grant", configuration: { "auto-configure": "true" } },
           { executor: "reject-ropc-grant", configuration: { "auto-configure": "true" } }
+        ]
+      },
+      {
+        name: "fbx-open-finance-tpp-client-auth",
+        description: "Open-finance TPPs authenticate with private_key_jwt only (added to the built-in FAPI 2.0 DPoP profile, which would also allow tls_client_auth; TLS ends at the gateway, so Keycloak never sees a client certificate).",
+        executors: [
+          { executor: "secure-client-authenticator", configuration: { "allowed-client-authenticators": ["client-jwt"], "default-client-authenticator": "client-jwt" } }
         ]
       },
       {
@@ -541,24 +548,17 @@ const realm = {
       },
       {
         name: "fbx-open-finance-tpp-fapi2-dpop",
-        description: "FAPI 2.0 Security Profile with DPoP sender-constrained tokens (PAR, PKCE, private_key_jwt or mTLS client auth, PS256) for open-finance TPP clients.",
+        description: "FAPI 2.0 Security Profile with DPoP sender-constrained tokens (PAR, PKCE, private_key_jwt client auth, PS256) for open-finance TPP clients. DPoP is the only token binding: TLS ends at the gateway (SIMPLE) and Keycloak runs behind plain HTTP, so mTLS-bound tokens cannot work.",
         enabled: true,
         conditions: [{ condition: "client-attributes", configuration: { "is_negative_logic": false, attributes: JSON.stringify([{ key: "fbx.client-type", value: "open-finance-tpp" }, { key: "fbx.tpp.token-binding", value: "dpop" }]) } }],
-        profiles: ["fapi-2-dpop-security-profile"]
+        profiles: ["fapi-2-dpop-security-profile", "fbx-open-finance-tpp-client-auth"]
       },
       {
         name: "fbx-open-finance-tpp-dynamic-registration",
         description: "TPP onboarding through Dynamic Client Registration (initial or registration access token) must already satisfy FAPI 2.0 + DPoP at registration time; the client-attributes conditions only match once the client exists.",
         enabled: true,
         conditions: [{ condition: "client-updater-context", configuration: { "is_negative_logic": false, "update-client-source": ["ByInitialAccessToken", "ByRegistrationAccessToken"] } }],
-        profiles: ["fapi-2-dpop-security-profile"]
-      },
-      {
-        name: "fbx-open-finance-tpp-fapi2-mtls",
-        description: "FAPI 2.0 Security Profile with mTLS certificate-bound tokens (RFC 8705) for open-finance TPP clients.",
-        enabled: true,
-        conditions: [{ condition: "client-attributes", configuration: { "is_negative_logic": false, attributes: JSON.stringify([{ key: "fbx.client-type", value: "open-finance-tpp" }, { key: "fbx.tpp.token-binding", value: "mtls" }]) } }],
-        profiles: ["fapi-2-security-profile"]
+        profiles: ["fapi-2-dpop-security-profile", "fbx-open-finance-tpp-client-auth"]
       }
     ]
   }

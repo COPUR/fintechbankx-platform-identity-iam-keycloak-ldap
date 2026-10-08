@@ -177,9 +177,8 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     if (entry.type === "open-finance-tpp") {
       if (c.publicClient !== false) err(`${c.clientId}: TPP clients are confidential`);
       if (c.attributes?.["require.pushed.authorization.requests"] !== "true") err(`${c.clientId}: PAR required`);
-      if (c.attributes?.["dpop.bound.access.tokens"] !== "true" && c.attributes?.["tls.client.certificate.bound.access.tokens"] !== "true") {
-        err(`${c.clientId}: tokens must be DPoP- or mTLS-bound`);
-      }
+      if (c.attributes?.["dpop.bound.access.tokens"] !== "true") err(`${c.clientId}: tokens must be DPoP-bound`);
+      if (c.attributes?.["fbx.tpp.token-binding"] !== "dpop") err(`${c.clientId}: fbx.tpp.token-binding must be dpop (mTLS-bound tokens are not supported)`);
     }
   }
 
@@ -247,8 +246,27 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
   // FAPI 2.0 policies for open-finance TPPs.
   const policies = realm.clientPolicies?.policies || [];
   const profilesUsed = new Set(policies.filter((p) => p.enabled !== false).flatMap((p) => p.profiles || []));
-  for (const p of ["fapi-2-dpop-security-profile", "fapi-2-security-profile"]) {
-    if (!profilesUsed.has(p)) err(`client policy using ${p} missing`);
+  if (!profilesUsed.has("fapi-2-dpop-security-profile")) err("client policy using fapi-2-dpop-security-profile missing");
+
+  // DPoP is the only token binding. TLS ends at the Istio gateway (SIMPLE)
+  // and Keycloak runs behind plain HTTP, so it never sees a client
+  // certificate: no certificate-bound tokens, no client-x509 authentication.
+  for (const c of clients.values()) {
+    if (c.attributes?.["tls.client.certificate.bound.access.tokens"] === "true") err(`${c.clientId}: certificate-bound tokens are not supported (DPoP only)`);
+    if (c.attributes?.["fbx.tpp.token-binding"] && c.attributes["fbx.tpp.token-binding"] !== "dpop") err(`${c.clientId}: fbx.tpp.token-binding must be dpop`);
+    if (c.clientAuthenticatorType === "client-x509") err(`${c.clientId}: clientAuthenticatorType client-x509 is not allowed`);
+  }
+  for (const p of policies) {
+    const conds = JSON.stringify(p.conditions || []);
+    if ((p.profiles || []).includes("fapi-2-security-profile") || /token-binding\\?"[^}]*mtls/.test(conds)) {
+      err(`client policy ${p.name}: mTLS-bound tokens are not supported (DPoP only)`);
+    }
+  }
+  for (const prof of realm.clientProfiles?.profiles || []) {
+    for (const e of prof.executors || []) {
+      if ((e.configuration?.["allowed-client-authenticators"] || []).includes("client-x509")) err(`client profile ${prof.name}: client-x509 is not allowed`);
+      if (e.configuration?.["tls-client-certificate-bound-access-tokens"] === "true" || e.executor === "holder-of-key-enforcer") err(`client profile ${prof.name}: certificate-bound tokens are not supported`);
+    }
   }
 
   // LDAP federation: read-only, credentials as placeholders, group mapper read-only.
