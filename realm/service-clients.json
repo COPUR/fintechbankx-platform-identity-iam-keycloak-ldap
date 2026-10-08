@@ -52,8 +52,12 @@
       "serviceAccount": "payment-bulk-orchestration-service",
       "displayName": "Bulk Payment Orchestration Service",
       "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
-      "audiences": [],
-      "audienceProvenance": {}
+      "audiences": [
+        "svc-of-consent-authorization"
+      ],
+      "audienceProvenance": {
+        "svc-of-consent-authorization": "confirmed by service thread 2026-10-08 (bulk orchestration PR #13, client-credentials call to consent-auth)"
+      }
     },
     {
       "clientId": "svc-pay-request-to-pay",
