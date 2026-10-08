@@ -142,6 +142,7 @@ const ssoClients = (manifest.ssoClients || []).map((c) => ({
   optionalClientScopes: []
 }));
 
+const adminRolesOf = (id) => manifest.clients.find((x) => x.clientId === id)?.adminRoles || [];
 const serviceClients = manifest.clients.map((c) => ({
   clientId: c.clientId,
   name: c.displayName,
@@ -373,8 +374,19 @@ const realm = {
     enabled: true,
     serviceAccountClientId: c.clientId,
     realmRoles: ["service"],
+    // Only the realm-management roles the registry grants (adminRoles), e.g.
+    // manage-users for the customer service's identity-link step.
+    ...(adminRolesOf(c.clientId).length ? { clientRoles: { "realm-management": adminRolesOf(c.clientId) } } : {}),
     groups: []
   })),
+
+  // fullScopeAllowed is false on service clients, so a granted
+  // realm-management role reaches the token only through this mapping.
+  clientScopeMappings: Object.fromEntries(
+    manifest.clients.some((c) => c.adminRoles?.length)
+      ? [["realm-management", manifest.clients.filter((c) => c.adminRoles?.length).map((c) => ({ client: c.clientId, roles: c.adminRoles }))]]
+      : []
+  ),
 
   components: {
     "org.keycloak.storage.UserStorageProvider": [

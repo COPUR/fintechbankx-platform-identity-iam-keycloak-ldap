@@ -1643,6 +1643,11 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": [
+          "manage-users"
+        ]
+      },
       "groups": []
     },
     {
@@ -1727,6 +1732,16 @@
       "groups": []
     }
   ],
+  "clientScopeMappings": {
+    "realm-management": [
+      {
+        "client": "svc-cus-profile-kyc",
+        "roles": [
+          "manage-users"
+        ]
+      }
+    ]
+  },
   "components": {
     "org.keycloak.storage.UserStorageProvider": [
       {

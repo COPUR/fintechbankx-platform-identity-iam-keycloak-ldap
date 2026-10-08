@@ -85,7 +85,11 @@
       "displayName": "Customer Profile and KYC Service",
       "source": "contract",
       "audiences": [],
-      "audienceProvenance": {}
+      "audienceProvenance": {},
+      "adminRoles": [
+        "manage-users"
+      ],
+      "adminRolesReason": "PUT /api/v1/customers/{id}/identity-link (staff step) sets the user attribute customer_id through the Keycloak admin API; confirmed by the customer thread 2026-10-08 (customer PR #13). Decision pending with the user: fine-grained users-only permission instead."
     },
     {
       "clientId": "svc-rsk-decisioning",

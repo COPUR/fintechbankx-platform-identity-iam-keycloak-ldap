@@ -100,6 +100,23 @@ export function checkRealm({ realm, registry, importEnv = null, importSecretKeys
       const sm = (realm.scopeMappings || []).find((s) => s.client === c.clientId);
       if (!sm || !(sm.roles || []).includes("service")) err(`${c.clientId}: scope mapping for role service missing`);
     }
+    // realm-management roles: only user-administration roles, each grant
+    // documented in the registry and carried both on the service account
+    // and in the client scope mapping (fullScopeAllowed is false).
+    const ADMIN_ROLES_ALLOWED = ["query-users", "view-users", "manage-users"];
+    const adminRoles = entry.adminRoles || [];
+    for (const r of adminRoles) {
+      if (!ADMIN_ROLES_ALLOWED.includes(r)) err(`${c.clientId}: realm-management role ${r} is not allowed (only ${ADMIN_ROLES_ALLOWED.join(", ")})`);
+    }
+    if (adminRoles.length && !entry.adminRolesReason) err(`${c.clientId}: adminRoles need adminRolesReason in the registry`);
+    const granted = [...(sa?.clientRoles?.["realm-management"] || [])].sort();
+    if (JSON.stringify(granted) !== JSON.stringify([...adminRoles].sort())) {
+      err(`${c.clientId}: service account realm-management roles ${granted.join(",") || "<none>"} != registry ${adminRoles.join(",") || "<none>"}`);
+    }
+    const mapped = (realm.clientScopeMappings?.["realm-management"] || []).find((m) => m.client === c.clientId);
+    if (JSON.stringify([...(mapped?.roles || [])].sort()) !== JSON.stringify([...adminRoles].sort())) {
+      err(`${c.clientId}: realm-management scope mapping does not match registry adminRoles`);
+    }
     const want = [...(entry.audiences || [])].sort();
     if (JSON.stringify(audiences(c)) !== JSON.stringify(want)) {
       err(`${c.clientId}: audience mappers ${audiences(c).join(",") || "<none>"} != registry ${want.join(",") || "<none>"}`);
