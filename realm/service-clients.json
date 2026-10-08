@@ -25,14 +25,12 @@
       "audiences": [
         "svc-rsk-decisioning",
         "svc-cmp-evidence",
-        "svc-of-consent-authorization",
         "svc-of-payee-verification",
         "svc-cus-profile-kyc"
       ],
       "audienceProvenance": {
         "svc-rsk-decisioning": "confirmed by service thread 2026-10-08",
         "svc-cmp-evidence": "confirmed by service thread 2026-10-08",
-        "svc-of-consent-authorization": "confirmed by service thread 2026-10-08",
         "svc-of-payee-verification": "confirmed by service thread 2026-10-08",
         "svc-cus-profile-kyc": "confirmed by customer thread 2026-10-08: GET /api/v1/customers/{id}/kyc-status (SERVICE_CALLERS_KYC)"
       }
@@ -72,12 +70,8 @@
       "serviceAccount": "payment-request-to-pay-service",
       "displayName": "Request to Pay Service",
       "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
-      "audiences": [
-        "svc-of-consent-authorization"
-      ],
-      "audienceProvenance": {
-        "svc-of-consent-authorization": "confirmed by the open finance thread 2026-10-08 (consent GET /api/v1/consents/{id} azp allow-list)"
-      }
+      "audiences": [],
+      "audienceProvenance": {}
     },
     {
       "clientId": "svc-cus-profile-kyc",

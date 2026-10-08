@@ -464,19 +464,6 @@
           }
         },
         {
-          "name": "aud-svc-of-consent-authorization",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "svc-of-consent-authorization",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true",
-            "lightweight.claim": "false"
-          }
-        },
-        {
           "name": "aud-svc-of-payee-verification",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
@@ -638,21 +625,7 @@
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false"
       },
-      "protocolMappers": [
-        {
-          "name": "aud-svc-of-consent-authorization",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "svc-of-consent-authorization",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true",
-            "lightweight.claim": "false"
-          }
-        }
-      ],
+      "protocolMappers": [],
       "defaultClientScopes": [
         "basic",
         "roles"
@@ -2402,7 +2375,7 @@
             "condition": "client-attributes",
             "configuration": {
               "is_negative_logic": false,
-              "attributes": "[{\"key\":\"fbx.client-type\",\"value\":\"open-finance-tpp\"},{\"key\":\"fbx.tpp.token-binding\",\"value\":\"dpop\"}]"
+              "attributes": "[{\"key\":\"fbx.client-type\",\"value\":\"open-finance-tpp\"}]"
             }
           }
         ],

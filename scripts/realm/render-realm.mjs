@@ -550,7 +550,7 @@ const realm = {
         name: "fbx-open-finance-tpp-fapi2-dpop",
         description: "FAPI 2.0 Security Profile with DPoP sender-constrained tokens (PAR, PKCE, private_key_jwt client auth, PS256) for open-finance TPP clients. DPoP is the only token binding: TLS ends at the gateway (SIMPLE) and Keycloak runs behind plain HTTP, so mTLS-bound tokens cannot work.",
         enabled: true,
-        conditions: [{ condition: "client-attributes", configuration: { "is_negative_logic": false, attributes: JSON.stringify([{ key: "fbx.client-type", value: "open-finance-tpp" }, { key: "fbx.tpp.token-binding", value: "dpop" }]) } }],
+        conditions: [{ condition: "client-attributes", configuration: { "is_negative_logic": false, attributes: JSON.stringify([{ key: "fbx.client-type", value: "open-finance-tpp" }]) } }],
         profiles: ["fapi-2-dpop-security-profile", "fbx-open-finance-tpp-client-auth"]
       },
       {

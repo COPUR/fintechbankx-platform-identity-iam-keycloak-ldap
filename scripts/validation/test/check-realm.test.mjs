@@ -286,3 +286,25 @@ test("TPP policies add a private_key_jwt-only client authentication profile", ()
     assert.deepEqual(p.profiles, ["fapi-2-dpop-security-profile", "fbx-open-finance-tpp-client-auth"]);
   }
 });
+
+test("only callers with a consent mesh edge carry the consent audience (bulk and mandates)", () => {
+  const input = fresh();
+  const callers = input.registry.clients
+    .filter((c) => (c.audiences || []).includes("svc-of-consent-authorization"))
+    .map((c) => c.clientId)
+    .sort();
+  assert.deepEqual(callers, ["svc-pay-bulk-orchestration", "svc-pay-recurring-mandates"]);
+});
+
+test("the TPP DPoP policy matches every open-finance TPP client, not only those tagged with the binding", () => {
+  const input = fresh();
+  const policies = input.realm["client-policies"]?.policies || input.realm.clientPolicies?.policies || [];
+  const tpp = policies.filter((p) => JSON.stringify(p.conditions || []).includes("open-finance-tpp"));
+  assert.ok(tpp.length > 0);
+  for (const p of tpp) {
+    for (const c of p.conditions.filter((x) => x.condition === "client-attributes")) {
+      const attrs = JSON.parse(c.configuration.attributes);
+      assert.deepEqual(attrs.map((a) => a.key), ["fbx.client-type"], p.name);
+    }
+  }
+});
