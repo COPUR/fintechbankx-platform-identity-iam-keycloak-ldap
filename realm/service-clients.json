@@ -42,8 +42,12 @@
       "serviceAccount": "payment-recurring-mandates-service",
       "displayName": "Recurring Mandates Service",
       "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
-      "audiences": [],
-      "audienceProvenance": {}
+      "audiences": [
+        "svc-of-consent-authorization"
+      ],
+      "audienceProvenance": {
+        "svc-of-consent-authorization": "confirmed by the open finance thread 2026-10-08 (consent GET /api/v1/consents/{id} azp allow-list)"
+      }
     },
     {
       "clientId": "svc-pay-bulk-orchestration",
@@ -66,8 +70,12 @@
       "serviceAccount": "payment-request-to-pay-service",
       "displayName": "Request to Pay Service",
       "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
-      "audiences": [],
-      "audienceProvenance": {}
+      "audiences": [
+        "svc-of-consent-authorization"
+      ],
+      "audienceProvenance": {
+        "svc-of-consent-authorization": "confirmed by the open finance thread 2026-10-08 (consent GET /api/v1/consents/{id} azp allow-list)"
+      }
     },
     {
       "clientId": "svc-cus-profile-kyc",
