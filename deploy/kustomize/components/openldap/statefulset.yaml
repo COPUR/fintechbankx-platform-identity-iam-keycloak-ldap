@@ -1,0 +1,123 @@
+# osixia/openldap 1.5.0 (same image as the monolith docker-compose), pinned by
+# digest. Base DN dc=fintechbankx,dc=internal; StartTLS enforced; anonymous
+# reads off by image default. The image needs root for slapd setup; it is
+# confined to dev/staging and reachable only from Keycloak.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openldap
+  labels:
+    app.kubernetes.io/name: openldap
+spec:
+  serviceName: openldap-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openldap
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openldap
+        app: openldap
+        version: "1.5.0"
+        sidecar.istio.io/inject: "true"
+        fintechbankx.io/service-id: svc-idn-keycloak-ldap
+    spec:
+      serviceAccountName: openldap
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 911
+      containers:
+        - name: openldap
+          image: docker.io/osixia/openldap:1.5.0@sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28
+          imagePullPolicy: IfNotPresent
+          args: ["--copy-service", "--loglevel", "info"]
+          ports:
+            - name: ldap
+              containerPort: 389
+          env:
+            - name: LDAP_ORGANISATION
+              value: FinTechBankX
+            - name: LDAP_DOMAIN
+              value: fintechbankx.internal
+            - name: LDAP_BASE_DN
+              value: dc=fintechbankx,dc=internal
+            - name: LDAP_BACKEND
+              value: mdb
+            - name: LDAP_RFC2307BIS_SCHEMA
+              value: "false"
+            - name: LDAP_READONLY_USER
+              value: "true"
+            - name: LDAP_READONLY_USER_USERNAME
+              value: readonly
+            - name: LDAP_TLS
+              value: "true"
+            - name: LDAP_TLS_CRT_FILENAME
+              value: tls.crt
+            - name: LDAP_TLS_KEY_FILENAME
+              value: tls.key
+            - name: LDAP_TLS_CA_CRT_FILENAME
+              value: ca.crt
+            - name: LDAP_TLS_ENFORCE
+              value: "true"
+            - name: LDAP_TLS_VERIFY_CLIENT
+              value: never
+            - name: LDAP_TLS_PROTOCOL_MIN
+              value: "3.3"
+            - name: LDAP_TLS_CIPHER_SUITE
+              value: SECURE256:+SECURE128:-VERS-TLS-ALL:+VERS-TLS1.3:+VERS-TLS1.2:-RSA:-DHE-DSS:-CAMELLIA-128-CBC:-CAMELLIA-256-CBC
+            - name: LDAP_SEED_INTERNAL_LDIF_PATH
+              value: /seed
+            - name: LDAP_REMOVE_CONFIG_AFTER_SETUP
+              value: "true"
+          envFrom:
+            - secretRef:
+                name: openldap
+          readinessProbe:
+            tcpSocket:
+              port: ldap
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: ldap
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/ldap
+              subPath: data
+            - name: data
+              mountPath: /etc/ldap/slapd.d
+              subPath: config
+            - name: tls
+              mountPath: /container/service/slapd/assets/certs
+              readOnly: true
+            - name: seed
+              mountPath: /seed
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: openldap-tls
+        - name: seed
+          configMap:
+            name: openldap-seed
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3-encrypted
+        resources:
+          requests:
+            storage: 5Gi

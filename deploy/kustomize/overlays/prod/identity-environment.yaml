@@ -1,0 +1,16 @@
+# prod environment knobs, copied into the rendered resources by
+# components/environment (Secrets Manager path prefix, issuer host, database).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: identity-environment
+  annotations:
+    config.kubernetes.io/local-config: "true"
+data:
+  # First segment of every Secrets Manager path: prod/<service-slug>/...
+  environment: prod
+  # Issuer = <identityUrl>/realms/fintechbankx
+  identityUrl: https://identity.fintechbankx.example
+  # Set from: terraform -chdir=deploy/terraform output -raw keycloak_db_writer_endpoint
+  databaseHost: fbx-prod-identity-keycloak.cluster-REPLACE.me-central-1.rds.amazonaws.com
+  databaseName: db_idn_keycloak_ldap_prod

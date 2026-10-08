@@ -1,0 +1,14 @@
+# Packs the realm-as-code file into the ConfigMap read by the
+# keycloak-config-cli Job (deploy/kustomize/base/realm-import). Kept next to
+# the realm file because kustomize only loads files under its own root.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+configMapGenerator:
+  - name: fintechbankx-realm
+    files:
+      - fintechbankx-realm.json
+    options:
+      labels:
+        app.kubernetes.io/name: keycloak-realm-import
+        app.kubernetes.io/part-of: fintechbankx-identity

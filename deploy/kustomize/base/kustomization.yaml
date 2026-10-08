@@ -1,0 +1,29 @@
+# Keycloak (realm fintechbankx) on EKS via the Keycloak Operator (Proposed).
+# Overlays set the environment knobs in identity-environment and patch the
+# Keycloak CR (hostname, database endpoint, sizing). The identity namespace,
+# its default-deny AuthorizationPolicy/NetworkPolicy and the ingress
+# VirtualService for IDENTITY_HOST are owned by
+# fintechbankx-platform-mesh-security-service-mesh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: identity
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: fintechbankx-identity
+      fintechbankx.io/service-id: svc-idn-keycloak-ldap
+    includeSelectors: false
+
+resources:
+  - serviceaccounts.yaml
+  - keycloak.yaml
+  - externalsecrets.yaml
+  - pdb.yaml
+  - hpa.yaml
+  - realm-import/job.yaml
+  - realm-import/externalsecret.yaml
+  - realm-import/env.yaml
+
+components:
+  - ../../../realm

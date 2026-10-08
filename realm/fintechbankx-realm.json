@@ -1,0 +1,1875 @@
+{
+  "realm": "fintechbankx",
+  "displayName": "FinTechBankX",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "rememberMe": false,
+  "verifyEmail": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "userManagedAccessAllowed": false,
+  "organizationsEnabled": false,
+  "defaultSignatureAlgorithm": "RS256",
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "ssoSessionIdleTimeoutRememberMe": 0,
+  "ssoSessionMaxLifespanRememberMe": 0,
+  "clientSessionIdleTimeout": 0,
+  "clientSessionMaxLifespan": 0,
+  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionMaxLifespanEnabled": true,
+  "offlineSessionMaxLifespan": 5184000,
+  "accessCodeLifespan": 60,
+  "accessCodeLifespanUserAction": 300,
+  "accessCodeLifespanLogin": 1800,
+  "actionTokenGeneratedByAdminLifespan": 43200,
+  "actionTokenGeneratedByUserLifespan": 300,
+  "oauth2DeviceCodeLifespan": 600,
+  "oauth2DevicePollingInterval": 5,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxTemporaryLockouts": 0,
+  "bruteForceStrategy": "MULTIPLE",
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 5,
+  "passwordPolicy": "length(14) and maxLength(128) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and notUsername and notEmail and passwordHistory(12) and forceExpiredPasswordChange(90)",
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "otpPolicyLookAheadWindow": 1,
+  "eventsEnabled": true,
+  "eventsExpiration": 7776000,
+  "eventsListeners": [
+    "jboss-logging"
+  ],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "attributes": {
+    "parRequestUriLifetime": "60",
+    "adminEventsExpiration": "7776000",
+    "frontendUrl": "",
+    "shortVerificationUri": ""
+  },
+  "roles": {
+    "realm": [
+      {
+        "name": "customer",
+        "description": "Retail or corporate customer (PSU) using first-party channels.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "banker",
+        "description": "Branch or relationship banker (staff, LDAP group fbx-banker).",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "loan_officer",
+        "description": "Credit and loan officer (staff, LDAP group fbx-loan-officer).",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "admin",
+        "description": "Platform or business administrator (staff, LDAP group fbx-admin).",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "service",
+        "description": "Machine identity of a FinTechBankX service (client-credentials service accounts only).",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "auditor",
+        "description": "Internal or external auditor, read-only evidence access (staff, LDAP group fbx-auditor).",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "compliance_officer",
+        "description": "Compliance and AML officer (staff, LDAP group fbx-compliance-officer).",
+        "composite": false,
+        "clientRole": false
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "staff",
+      "path": "/staff",
+      "attributes": {
+        "fbx.managed-by": [
+          "ldap-group-mapper"
+        ]
+      },
+      "realmRoles": [],
+      "subGroups": [
+        {
+          "name": "fbx-banker",
+          "path": "/staff/fbx-banker",
+          "realmRoles": [
+            "banker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-loan-officer",
+          "path": "/staff/fbx-loan-officer",
+          "realmRoles": [
+            "loan_officer"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-admin",
+          "path": "/staff/fbx-admin",
+          "realmRoles": [
+            "admin"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-auditor",
+          "path": "/staff/fbx-auditor",
+          "realmRoles": [
+            "auditor"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-compliance-officer",
+          "path": "/staff/fbx-compliance-officer",
+          "realmRoles": [
+            "compliance_officer"
+          ],
+          "attributes": {},
+          "subGroups": []
+        }
+      ]
+    },
+    {
+      "name": "customers",
+      "path": "/customers",
+      "realmRoles": [
+        "customer"
+      ],
+      "attributes": {},
+      "subGroups": []
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "svc-ln-loan-lifecycle",
+      "name": "Loan Lifecycle Service",
+      "description": "Confidential client-credentials client for svc-ln-loan-lifecycle (namespace lending, service account loan-lifecycle-service). Credential delivered via Secrets Manager <env>/loan-lifecycle-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_LN_LOAN_LIFECYCLE)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "loan-lifecycle-service",
+        "fbx.namespace": "lending",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-pay-initiation-settlement",
+      "name": "Payment Initiation and Settlement Service",
+      "description": "Confidential client-credentials client for svc-pay-initiation-settlement (namespace payments, service account payment-initiation-settlement-service). Credential delivered via Secrets Manager <env>/payment-initiation-settlement-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_PAY_INITIATION_SETTLEMENT)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "payment-initiation-settlement-service",
+        "fbx.namespace": "payments",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-rsk-decisioning",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-rsk-decisioning",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cmp-evidence",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cmp-evidence",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-consent-authorization",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-consent-authorization",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-payee-verification",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-payee-verification",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-pay-recurring-mandates",
+      "name": "Recurring Mandates Service",
+      "description": "Confidential client-credentials client for svc-pay-recurring-mandates (namespace payments, service account payment-recurring-mandates-service). Credential delivered via Secrets Manager <env>/payment-recurring-mandates-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_PAY_RECURRING_MANDATES)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "payment-recurring-mandates-service",
+        "fbx.namespace": "payments",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-pay-bulk-orchestration",
+      "name": "Bulk Payment Orchestration Service",
+      "description": "Confidential client-credentials client for svc-pay-bulk-orchestration (namespace payments, service account payment-bulk-orchestration-service). Credential delivered via Secrets Manager <env>/payment-bulk-orchestration-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_PAY_BULK_ORCHESTRATION)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "payment-bulk-orchestration-service",
+        "fbx.namespace": "payments",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-pay-request-to-pay",
+      "name": "Request to Pay Service",
+      "description": "Confidential client-credentials client for svc-pay-request-to-pay (namespace payments, service account payment-request-to-pay-service). Credential delivered via Secrets Manager <env>/payment-request-to-pay-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_PAY_REQUEST_TO_PAY)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "payment-request-to-pay-service",
+        "fbx.namespace": "payments",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-cus-profile-kyc",
+      "name": "Customer Profile and KYC Service",
+      "description": "Confidential client-credentials client for svc-cus-profile-kyc (namespace customer, service account customer-profile-kyc-service). Credential delivered via Secrets Manager <env>/customer-profile-kyc-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_CUS_PROFILE_KYC)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "customer-profile-kyc-service",
+        "fbx.namespace": "customer",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-rsk-decisioning",
+      "name": "Risk Decisioning Service",
+      "description": "Confidential client-credentials client for svc-rsk-decisioning (namespace risk, service account risk-decisioning-service). Credential delivered via Secrets Manager <env>/risk-decisioning-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_RSK_DECISIONING)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "risk-decisioning-service",
+        "fbx.namespace": "risk",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-cmp-evidence",
+      "name": "Compliance Evidence Service",
+      "description": "Confidential client-credentials client for svc-cmp-evidence (namespace compliance, service account compliance-evidence-service). Credential delivered via Secrets Manager <env>/compliance-evidence-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_CMP_EVIDENCE)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "compliance-evidence-service",
+        "fbx.namespace": "compliance",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-of-consent-authorization",
+      "name": "Open Finance Consent and Authorization Service",
+      "description": "Confidential client-credentials client for svc-of-consent-authorization (namespace open-finance, service account consent-authorization-service). Credential delivered via Secrets Manager <env>/consent-authorization-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_OF_CONSENT_AUTHORIZATION)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "consent-authorization-service",
+        "fbx.namespace": "open-finance",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-of-personal-financial-data",
+      "name": "Open Finance Personal Financial Data Service",
+      "description": "Confidential client-credentials client for svc-of-personal-financial-data (namespace open-finance, service account personal-financial-data-service). Credential delivered via Secrets Manager <env>/personal-financial-data-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_OF_PERSONAL_FINANCIAL_DATA)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "personal-financial-data-service",
+        "fbx.namespace": "open-finance",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-of-business-financial-data",
+      "name": "Open Finance Business Financial Data Service",
+      "description": "Confidential client-credentials client for svc-of-business-financial-data (namespace open-finance, service account business-financial-data-service). Credential delivered via Secrets Manager <env>/business-financial-data-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_OF_BUSINESS_FINANCIAL_DATA)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "business-financial-data-service",
+        "fbx.namespace": "open-finance",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-of-payee-verification",
+      "name": "Open Finance Payee Verification Service",
+      "description": "Confidential client-credentials client for svc-of-payee-verification (namespace open-finance, service account payee-verification-service). Credential delivered via Secrets Manager <env>/payee-verification-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_OF_PAYEE_VERIFICATION)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "payee-verification-service",
+        "fbx.namespace": "open-finance",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-of-banking-metadata",
+      "name": "Open Finance Banking Metadata Service",
+      "description": "Confidential client-credentials client for svc-of-banking-metadata (namespace open-finance, service account banking-metadata-service). Credential delivered via Secrets Manager <env>/banking-metadata-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_OF_BANKING_METADATA)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "banking-metadata-service",
+        "fbx.namespace": "open-finance",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-of-open-products-catalog",
+      "name": "Open Finance Products Catalog Service",
+      "description": "Confidential client-credentials client for svc-of-open-products-catalog (namespace open-finance, service account open-products-catalog-service). Credential delivered via Secrets Manager <env>/open-products-catalog-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_OF_OPEN_PRODUCTS_CATALOG)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "open-products-catalog-service",
+        "fbx.namespace": "open-finance",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-of-atm-directory",
+      "name": "Open Finance ATM Directory Service",
+      "description": "Confidential client-credentials client for svc-of-atm-directory (namespace open-finance, service account atm-directory-service). Credential delivered via Secrets Manager <env>/atm-directory-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_OF_ATM_DIRECTORY)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "atm-directory-service",
+        "fbx.namespace": "open-finance",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "fintechbankx-web",
+      "name": "FinTechBankX web portal",
+      "description": "First-party public client (authorization code + PKCE S256, no client credential). FinTechBankX web portal.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "$(env:FBX_WEB_REDIRECT_URI)"
+      ],
+      "webOrigins": [
+        "$(env:FBX_WEB_ORIGIN)"
+      ],
+      "attributes": {
+        "fbx.client-type": "first-party-public",
+        "pkce.code.challenge.method": "S256",
+        "require.pushed.authorization.requests": "false",
+        "use.refresh.tokens": "true",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "post.logout.redirect.uris": "$(env:FBX_WEB_POST_LOGOUT_REDIRECT_URI)"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-ln-loan-lifecycle",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-ln-loan-lifecycle",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-initiation-settlement",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-initiation-settlement",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-recurring-mandates",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-recurring-mandates",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-bulk-orchestration",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-bulk-orchestration",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-request-to-pay",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-request-to-pay",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-rsk-decisioning",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-rsk-decisioning",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cmp-evidence",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cmp-evidence",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ]
+    },
+    {
+      "clientId": "fintechbankx-mobile",
+      "name": "FinTechBankX mobile app",
+      "description": "First-party public client (authorization code + PKCE S256, no client credential). FinTechBankX mobile app.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "$(env:FBX_MOBILE_REDIRECT_URI)"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "first-party-public",
+        "pkce.code.challenge.method": "S256",
+        "require.pushed.authorization.requests": "false",
+        "use.refresh.tokens": "true",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-ln-loan-lifecycle",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-ln-loan-lifecycle",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-initiation-settlement",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-initiation-settlement",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-recurring-mandates",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-recurring-mandates",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-bulk-orchestration",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-bulk-orchestration",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-request-to-pay",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-request-to-pay",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ]
+    },
+    {
+      "clientId": "of-tpp-conformance-template",
+      "name": "Open Finance TPP conformance template (disabled)",
+      "description": "Disabled reference client showing the settings every onboarded TPP client must carry. Real TPP clients are registered through the consent-authorization onboarding flow, never committed here.",
+      "enabled": false,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": true,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "https://tpp.example/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "open-finance-tpp",
+        "fbx.tpp.token-binding": "dpop",
+        "require.pushed.authorization.requests": "true",
+        "dpop.bound.access.tokens": "true",
+        "pkce.code.challenge.method": "S256",
+        "use.jwks.url": "true",
+        "jwks.url": "https://tpp.example/.well-known/jwks.json",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "id.token.signed.response.alg": "PS256",
+        "access.token.signed.response.alg": "PS256",
+        "authorization.signed.response.alg": "PS256",
+        "request.object.signature.alg": "PS256",
+        "access.token.lifespan": "300",
+        "use.refresh.tokens": "true",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-of-consent-authorization",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-consent-authorization",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-personal-financial-data",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-personal-financial-data",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-business-financial-data",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-business-financial-data",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-payee-verification",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-payee-verification",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-banking-metadata",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-banking-metadata",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-open-products-catalog",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-open-products-catalog",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-of-atm-directory",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-of-atm-directory",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "acr",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    }
+  ],
+  "scopeMappings": [
+    {
+      "client": "svc-ln-loan-lifecycle",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-pay-initiation-settlement",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-pay-recurring-mandates",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-pay-bulk-orchestration",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-pay-request-to-pay",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-cus-profile-kyc",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-rsk-decisioning",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-cmp-evidence",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-of-consent-authorization",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-of-personal-financial-data",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-of-business-financial-data",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-of-payee-verification",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-of-banking-metadata",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-of-open-products-catalog",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "svc-of-atm-directory",
+      "roles": [
+        "service"
+      ]
+    },
+    {
+      "client": "fintechbankx-web",
+      "roles": [
+        "customer",
+        "banker",
+        "loan_officer",
+        "admin",
+        "auditor",
+        "compliance_officer"
+      ]
+    },
+    {
+      "client": "fintechbankx-mobile",
+      "roles": [
+        "customer",
+        "banker",
+        "loan_officer",
+        "admin",
+        "auditor",
+        "compliance_officer"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-svc-ln-loan-lifecycle",
+      "enabled": true,
+      "serviceAccountClientId": "svc-ln-loan-lifecycle",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-pay-initiation-settlement",
+      "enabled": true,
+      "serviceAccountClientId": "svc-pay-initiation-settlement",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-pay-recurring-mandates",
+      "enabled": true,
+      "serviceAccountClientId": "svc-pay-recurring-mandates",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-pay-bulk-orchestration",
+      "enabled": true,
+      "serviceAccountClientId": "svc-pay-bulk-orchestration",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-pay-request-to-pay",
+      "enabled": true,
+      "serviceAccountClientId": "svc-pay-request-to-pay",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-cus-profile-kyc",
+      "enabled": true,
+      "serviceAccountClientId": "svc-cus-profile-kyc",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-rsk-decisioning",
+      "enabled": true,
+      "serviceAccountClientId": "svc-rsk-decisioning",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-cmp-evidence",
+      "enabled": true,
+      "serviceAccountClientId": "svc-cmp-evidence",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-of-consent-authorization",
+      "enabled": true,
+      "serviceAccountClientId": "svc-of-consent-authorization",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-of-personal-financial-data",
+      "enabled": true,
+      "serviceAccountClientId": "svc-of-personal-financial-data",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-of-business-financial-data",
+      "enabled": true,
+      "serviceAccountClientId": "svc-of-business-financial-data",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-of-payee-verification",
+      "enabled": true,
+      "serviceAccountClientId": "svc-of-payee-verification",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-of-banking-metadata",
+      "enabled": true,
+      "serviceAccountClientId": "svc-of-banking-metadata",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-of-open-products-catalog",
+      "enabled": true,
+      "serviceAccountClientId": "svc-of-open-products-catalog",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-of-atm-directory",
+      "enabled": true,
+      "serviceAccountClientId": "svc-of-atm-directory",
+      "realmRoles": [
+        "service"
+      ],
+      "groups": []
+    }
+  ],
+  "components": {
+    "org.keycloak.storage.UserStorageProvider": [
+      {
+        "name": "fbx-directory",
+        "providerId": "ldap",
+        "subComponents": {
+          "org.keycloak.storage.ldap.mappers.LDAPStorageMapper": [
+            {
+              "name": "username",
+              "providerId": "user-attribute-ldap-mapper",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute": [
+                  "$(env:LDAP_USERNAME_ATTRIBUTE)"
+                ],
+                "user.model.attribute": [
+                  "username"
+                ],
+                "read.only": [
+                  "true"
+                ],
+                "always.read.value.from.ldap": [
+                  "true"
+                ],
+                "is.mandatory.in.ldap": [
+                  "true"
+                ],
+                "is.binary.attribute": [
+                  "false"
+                ],
+                "attribute.force.default": [
+                  "false"
+                ]
+              }
+            },
+            {
+              "name": "first name",
+              "providerId": "user-attribute-ldap-mapper",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute": [
+                  "givenName"
+                ],
+                "user.model.attribute": [
+                  "firstName"
+                ],
+                "read.only": [
+                  "true"
+                ],
+                "always.read.value.from.ldap": [
+                  "true"
+                ],
+                "is.mandatory.in.ldap": [
+                  "false"
+                ],
+                "is.binary.attribute": [
+                  "false"
+                ],
+                "attribute.force.default": [
+                  "false"
+                ]
+              }
+            },
+            {
+              "name": "last name",
+              "providerId": "user-attribute-ldap-mapper",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute": [
+                  "sn"
+                ],
+                "user.model.attribute": [
+                  "lastName"
+                ],
+                "read.only": [
+                  "true"
+                ],
+                "always.read.value.from.ldap": [
+                  "true"
+                ],
+                "is.mandatory.in.ldap": [
+                  "true"
+                ],
+                "is.binary.attribute": [
+                  "false"
+                ],
+                "attribute.force.default": [
+                  "false"
+                ]
+              }
+            },
+            {
+              "name": "email",
+              "providerId": "user-attribute-ldap-mapper",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute": [
+                  "mail"
+                ],
+                "user.model.attribute": [
+                  "email"
+                ],
+                "read.only": [
+                  "true"
+                ],
+                "always.read.value.from.ldap": [
+                  "true"
+                ],
+                "is.mandatory.in.ldap": [
+                  "false"
+                ],
+                "is.binary.attribute": [
+                  "false"
+                ],
+                "attribute.force.default": [
+                  "false"
+                ]
+              }
+            },
+            {
+              "name": "staff-groups",
+              "providerId": "group-ldap-mapper",
+              "subComponents": {},
+              "config": {
+                "groups.dn": [
+                  "$(env:LDAP_GROUPS_DN)"
+                ],
+                "group.name.ldap.attribute": [
+                  "cn"
+                ],
+                "group.object.classes": [
+                  "$(env:LDAP_GROUP_OBJECT_CLASSES)"
+                ],
+                "groups.ldap.filter": [
+                  "(cn=fbx-*)"
+                ],
+                "preserve.group.inheritance": [
+                  "false"
+                ],
+                "ignore.missing.groups": [
+                  "true"
+                ],
+                "membership.ldap.attribute": [
+                  "member"
+                ],
+                "membership.attribute.type": [
+                  "DN"
+                ],
+                "membership.user.ldap.attribute": [
+                  "$(env:LDAP_USERNAME_ATTRIBUTE)"
+                ],
+                "memberof.ldap.attribute": [
+                  "memberOf"
+                ],
+                "user.roles.retrieve.strategy": [
+                  "LOAD_GROUPS_BY_MEMBER_ATTRIBUTE"
+                ],
+                "mode": [
+                  "READ_ONLY"
+                ],
+                "groups.path": [
+                  "/staff"
+                ],
+                "drop.non.existing.groups.during.sync": [
+                  "false"
+                ]
+              }
+            }
+          ]
+        },
+        "config": {
+          "enabled": [
+            "true"
+          ],
+          "priority": [
+            "0"
+          ],
+          "vendor": [
+            "$(env:LDAP_VENDOR)"
+          ],
+          "editMode": [
+            "READ_ONLY"
+          ],
+          "importEnabled": [
+            "true"
+          ],
+          "syncRegistrations": [
+            "false"
+          ],
+          "connectionUrl": [
+            "$(env:LDAP_CONNECTION_URL)"
+          ],
+          "startTls": [
+            "$(env:LDAP_START_TLS)"
+          ],
+          "useTruststoreSpi": [
+            "always"
+          ],
+          "connectionPooling": [
+            "true"
+          ],
+          "connectionTimeout": [
+            "5000"
+          ],
+          "readTimeout": [
+            "10000"
+          ],
+          "authType": [
+            "simple"
+          ],
+          "bindDn": [
+            "$(env:LDAP_BIND_DN)"
+          ],
+          "bindCredential": [
+            "$(env:LDAP_BIND_CREDENTIAL)"
+          ],
+          "usersDn": [
+            "$(env:LDAP_USERS_DN)"
+          ],
+          "usernameLDAPAttribute": [
+            "$(env:LDAP_USERNAME_ATTRIBUTE)"
+          ],
+          "rdnLDAPAttribute": [
+            "$(env:LDAP_RDN_ATTRIBUTE)"
+          ],
+          "uuidLDAPAttribute": [
+            "$(env:LDAP_UUID_ATTRIBUTE)"
+          ],
+          "userObjectClasses": [
+            "$(env:LDAP_USER_OBJECT_CLASSES)"
+          ],
+          "customUserSearchFilter": [
+            "$(env:LDAP_USER_SEARCH_FILTER)"
+          ],
+          "searchScope": [
+            "2"
+          ],
+          "pagination": [
+            "true"
+          ],
+          "batchSizeForSync": [
+            "500"
+          ],
+          "fullSyncPeriod": [
+            "86400"
+          ],
+          "changedSyncPeriod": [
+            "900"
+          ],
+          "cachePolicy": [
+            "DEFAULT"
+          ],
+          "trustEmail": [
+            "true"
+          ],
+          "validatePasswordPolicy": [
+            "false"
+          ],
+          "allowKerberosAuthentication": [
+            "false"
+          ],
+          "useKerberosForPasswordAuthentication": [
+            "false"
+          ],
+          "krbPrincipalAttribute": [
+            ""
+          ]
+        }
+      }
+    ]
+  },
+  "clientProfiles": {
+    "profiles": [
+      {
+        "name": "fbx-service-client-baseline",
+        "description": "Machine-to-machine clients: client credentials only, no browser or password grants, no full scope.",
+        "executors": [
+          {
+            "executor": "secure-client-authenticator",
+            "configuration": {
+              "allowed-client-authenticators": [
+                "client-secret",
+                "client-jwt",
+                "client-x509"
+              ],
+              "default-client-authenticator": "client-secret"
+            }
+          },
+          {
+            "executor": "reject-implicit-grant",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          },
+          {
+            "executor": "reject-ropc-grant",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          },
+          {
+            "executor": "full-scope-disabled",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          }
+        ]
+      },
+      {
+        "name": "fbx-first-party-public",
+        "description": "OAuth 2.1 public clients (web, mobile): PKCE S256, no implicit or password grant, strict redirect URIs. DPoP is not required for first-party clients yet (platform contract addendum 2026-10-08).",
+        "executors": [
+          {
+            "executor": "secure-redirect-uris-enforcer",
+            "configuration": {
+              "allow-ipv4-loopback-address": "false",
+              "allow-ipv6-loopback-address": "false",
+              "allow-private-use-uri-scheme": "true",
+              "oauth-2-1-compliant": "true"
+            }
+          },
+          {
+            "executor": "pkce-enforcer",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          },
+          {
+            "executor": "reject-implicit-grant",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          },
+          {
+            "executor": "reject-ropc-grant",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "clientPolicies": {
+    "policies": [
+      {
+        "name": "fbx-service-clients",
+        "description": "Applies the service client baseline to every client tagged fbx.client-type=service.",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-attributes",
+            "configuration": {
+              "is_negative_logic": false,
+              "attributes": "[{\"key\":\"fbx.client-type\",\"value\":\"service\"}]"
+            }
+          }
+        ],
+        "profiles": [
+          "fbx-service-client-baseline"
+        ]
+      },
+      {
+        "name": "fbx-first-party-public-clients",
+        "description": "Applies OAuth 2.1 public-client rules to web and mobile clients.",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-attributes",
+            "configuration": {
+              "is_negative_logic": false,
+              "attributes": "[{\"key\":\"fbx.client-type\",\"value\":\"first-party-public\"}]"
+            }
+          }
+        ],
+        "profiles": [
+          "fbx-first-party-public"
+        ]
+      },
+      {
+        "name": "fbx-open-finance-tpp-fapi2-dpop",
+        "description": "FAPI 2.0 Security Profile with DPoP sender-constrained tokens (PAR, PKCE, private_key_jwt or mTLS client auth, PS256) for open-finance TPP clients.",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-attributes",
+            "configuration": {
+              "is_negative_logic": false,
+              "attributes": "[{\"key\":\"fbx.client-type\",\"value\":\"open-finance-tpp\"},{\"key\":\"fbx.tpp.token-binding\",\"value\":\"dpop\"}]"
+            }
+          }
+        ],
+        "profiles": [
+          "fapi-2-dpop-security-profile"
+        ]
+      },
+      {
+        "name": "fbx-open-finance-tpp-dynamic-registration",
+        "description": "TPP onboarding through Dynamic Client Registration (initial or registration access token) must already satisfy FAPI 2.0 + DPoP at registration time; the client-attributes conditions only match once the client exists.",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-updater-context",
+            "configuration": {
+              "is_negative_logic": false,
+              "update-client-source": [
+                "ByInitialAccessToken",
+                "ByRegistrationAccessToken"
+              ]
+            }
+          }
+        ],
+        "profiles": [
+          "fapi-2-dpop-security-profile"
+        ]
+      },
+      {
+        "name": "fbx-open-finance-tpp-fapi2-mtls",
+        "description": "FAPI 2.0 Security Profile with mTLS certificate-bound tokens (RFC 8705) for open-finance TPP clients.",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-attributes",
+            "configuration": {
+              "is_negative_logic": false,
+              "attributes": "[{\"key\":\"fbx.client-type\",\"value\":\"open-finance-tpp\"},{\"key\":\"fbx.tpp.token-binding\",\"value\":\"mtls\"}]"
+            }
+          }
+        ],
+        "profiles": [
+          "fapi-2-security-profile"
+        ]
+      }
+    ]
+  }
+}

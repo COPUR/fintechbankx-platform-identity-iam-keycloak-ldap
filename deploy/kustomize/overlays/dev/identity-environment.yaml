@@ -1,0 +1,16 @@
+# dev environment knobs, copied into the rendered resources by
+# components/environment (Secrets Manager path prefix, issuer host, database).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: identity-environment
+  annotations:
+    config.kubernetes.io/local-config: "true"
+data:
+  # First segment of every Secrets Manager path: dev/<service-slug>/...
+  environment: dev
+  # Issuer = <identityUrl>/realms/fintechbankx
+  identityUrl: https://identity.dev.fintechbankx.example
+  # Set from: terraform -chdir=deploy/terraform output -raw keycloak_db_writer_endpoint
+  databaseHost: fbx-dev-identity-keycloak.cluster-REPLACE.me-central-1.rds.amazonaws.com
+  databaseName: db_idn_keycloak_ldap_dev

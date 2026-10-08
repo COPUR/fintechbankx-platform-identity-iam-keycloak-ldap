@@ -1,0 +1,162 @@
+# Keycloak 26.7.5 managed by the Keycloak Operator (k8s.keycloak.org/v2beta1).
+# - 3 instances spread across Availability Zones and nodes; PDB and HPA in
+#   this directory (the CR exposes the scale subresource).
+# - External Aurora PostgreSQL (deploy/terraform), credentials from
+#   ExternalSecret keycloak-db; TLS to the database (rds.force_ssl).
+# - TLS terminates at the Istio ingress gateway; inside the mesh traffic is
+#   mTLS (STRICT), so Keycloak listens on plain HTTP 8080 and trusts
+#   X-Forwarded-* from the gateway only (NetworkPolicy below + mesh policy).
+# - Health and metrics on the management port 9000 (Keycloak default; the
+#   service contract's 8081 applies to Spring services).
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+spec:
+  instances: 3
+  image: quay.io/keycloak/keycloak:26.7.5
+  # Stock image: let Keycloak run its build step at start-up. Switch to true
+  # once CI publishes an optimized image (kc.sh build) to ECR.
+  startOptimized: false
+
+  db:
+    vendor: postgres
+    host: AURORA_WRITER_ENDPOINT
+    port: 5432
+    database: db_idn_keycloak_ldap_ENVIRONMENT
+    schema: keycloak
+    usernameSecret:
+      name: keycloak-db
+      key: username
+    passwordSecret:
+      name: keycloak-db
+      key: password
+    poolInitialSize: 5
+    poolMinSize: 5
+    poolMaxSize: 30
+
+  http:
+    httpEnabled: true
+    httpPort: 8080
+    serviceName: keycloak
+
+  httpManagement:
+    port: 9000
+
+  hostname:
+    hostname: https://IDENTITY_HOST
+    strict: true
+    # Services reach Keycloak in-cluster (keycloak.identity.svc.cluster.local:8080)
+    # for token and JWKS calls; issuer stays the public hostname.
+    backchannelDynamic: true
+
+  proxy:
+    headers: xforwarded
+
+  features:
+    disabled:
+      - impersonation
+
+  additionalOptions:
+    - name: db-url-properties
+      value: "?sslmode=require"
+    - name: health-enabled
+      value: "true"
+    - name: metrics-enabled
+      value: "true"
+    - name: event-metrics-user-enabled
+      value: "true"
+    - name: log-console-output
+      value: json
+    - name: http-metrics-histograms-enabled
+      value: "true"
+    - name: spi-events-listener--jboss-logging--success-level
+      value: info
+    - name: spi-events-listener--jboss-logging--error-level
+      value: warn
+
+  tracing:
+    enabled: true
+    endpoint: http://otel-collector.observability.svc.cluster.local:4317
+    protocol: grpc
+    serviceName: svc-idn-keycloak-ldap
+    samplerType: parentbased_traceidratio
+    samplerRatio: 0.1
+
+  # Machine admin used only by the realm import Job (client credentials in
+  # the master realm). Rotate it after the first import; no human admin is
+  # bootstrapped from source control.
+  bootstrapAdmin:
+    service:
+      secret: keycloak-bootstrap-admin-client
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1536Mi
+    limits:
+      memory: 2Gi
+
+  scheduling:
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: keycloak
+            app.kubernetes.io/instance: keycloak
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: keycloak
+            app.kubernetes.io/instance: keycloak
+
+  # Operator-managed NetworkPolicy for the Keycloak pods. Additive to the
+  # mesh repository's namespace default-deny and edge rules.
+  networkPolicy:
+    enabled: true
+    http:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: istio-ingress
+        podSelector:
+          matchLabels:
+            istio: ingressgateway
+      - namespaceSelector:
+          matchExpressions:
+            - key: kubernetes.io/metadata.name
+              operator: In
+              values: [lending, payments, customer, risk, compliance, open-finance]
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: keycloak-realm-import
+    management:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: observability
+
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
+  update:
+    strategy: Auto
+
+  unsupported:
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: keycloak
+          sidecar.istio.io/inject: "true"
+          fintechbankx.io/service-id: svc-idn-keycloak-ldap
+          version: "26.7.5"
+        annotations:
+          proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true }'
+      spec:
+        serviceAccountName: keycloak
