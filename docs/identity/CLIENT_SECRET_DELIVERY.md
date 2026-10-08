@@ -1,13 +1,13 @@
 # Service client credential delivery (Proposed)
 
-Every service authenticates to Keycloak with client credentials. The credential has one home: AWS Secrets Manager.
+Every service authenticates to Keycloak with client credentials, and staff tools (Grafana, client `svc-obs-grafana`, entry `<env>/observability-grafana/oidc-client`) with a confidential client credential. The credential has one home: AWS Secrets Manager.
 
 ```
 <env>/<service-slug>/oidc-client
 {"client_id": "<service id>", "client_secret": "...", "issuer_uri": "https://<identity-host>/realms/fintechbankx", "token_uri": "<issuer_uri>/protocol/openid-connect/token"}
 ```
 
-1. `deploy/terraform` creates one empty secret container per entry of `realm/service-clients.json`, encrypted with the identity KMS key (tagged `fintechbankx.io/secrets=true` so External Secrets Operator may decrypt it).
+1. `deploy/terraform` creates one empty secret container per entry of `clients` and `ssoClients` in `realm/service-clients.json`, encrypted with the identity KMS key (tagged `fintechbankx.io/secrets=true` so External Secrets Operator may decrypt it).
 2. `scripts/identity/publish-oidc-client-secrets.sh` fills the containers (dry run by default):
 
    ```bash

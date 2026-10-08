@@ -130,8 +130,34 @@ export function checkRealm({ realm, registry, importEnv = null, importSecretKeys
     }
   }
 
+  // Staff SSO clients (Grafana): confidential, code + PKCE, roles in userinfo.
+  for (const entry of registry.ssoClients || []) {
+    const c = clients.get(entry.clientId);
+    if (!c) { err(`staff SSO client ${entry.clientId} missing from realm`); continue; }
+    if (c.publicClient !== false) err(`${c.clientId}: must be confidential`);
+    if (c.standardFlowEnabled !== true) err(`${c.clientId}: authorization code flow must be enabled`);
+    for (const f of ["implicitFlowEnabled", "directAccessGrantsEnabled", "serviceAccountsEnabled"]) {
+      if (c[f] !== false) err(`${c.clientId}: ${f} must be false`);
+    }
+    if (c.attributes?.["pkce.code.challenge.method"] !== "S256") err(`${c.clientId}: PKCE S256 required`);
+    if (c.attributes?.["fbx.client-type"] !== "staff-sso") err(`${c.clientId}: attribute fbx.client-type must be staff-sso`);
+    if (c.secret !== `$(env:${secretEnvName(c.clientId)})`) err(`${c.clientId}: secret must be $(env:${secretEnvName(c.clientId)})`);
+    const rm = (c.protocolMappers || []).find((m) => m.protocolMapper === "oidc-usermodel-realm-role-mapper");
+    if (!rm || rm.config?.["claim.name"] !== "realm_access.roles" || rm.config?.["userinfo.token.claim"] !== "true") {
+      err(`${c.clientId}: realm_access.roles mapper with userinfo claim required`);
+    }
+    const sm = (realm.scopeMappings || []).find((s) => s.client === c.clientId);
+    const scoped = [...(sm?.roles || [])].sort();
+    if (JSON.stringify(scoped) !== JSON.stringify([...(entry.roles || [])].sort())) err(`${c.clientId}: scope mapping ${scoped.join(",")} != registry roles`);
+    if (!(c.redirectUris || []).every((u) => /^\$\(env:[A-Z0-9_]+\)\/login\/generic_oauth$/.test(u))) err(`${c.clientId}: redirect URIs must be <root placeholder>/login/generic_oauth`);
+  }
+
   // Every audience must name a client in the realm; every client must be registered.
-  const registered = new Set([...registry.clients.map((c) => c.clientId), ...(registry.channelClients || []).map((c) => c.clientId)]);
+  const registered = new Set([
+    ...registry.clients.map((c) => c.clientId),
+    ...(registry.channelClients || []).map((c) => c.clientId),
+    ...(registry.ssoClients || []).map((c) => c.clientId)
+  ]);
   for (const c of clients.values()) {
     if (!registered.has(c.clientId)) err(`client ${c.clientId} is not in realm/service-clients.json`);
     for (const a of audiences(c)) if (!knownIds.has(a)) err(`${c.clientId}: audience ${a} is not a client of the realm`);
@@ -176,7 +202,7 @@ export function checkRealm({ realm, registry, importEnv = null, importSecretKeys
       }
     });
     for (const name of used) if (!supplied.has(name)) err(`placeholder ${name} is not supplied by the realm import Job`);
-    for (const entry of registry.clients) {
+    for (const entry of [...registry.clients, ...(registry.ssoClients || [])]) {
       const env = secretEnvName(entry.clientId);
       if (!importSecretKeys.includes(env)) err(`ExternalSecret keycloak-realm-import lacks ${env}`);
       const want = `ENVIRONMENT/${entry.serviceSlug}/oidc-client`;
@@ -212,5 +238,5 @@ if (isMain) {
     console.error(`realm-check: FAILED (${errors.length} problem(s), ${n} clients)`);
     process.exit(1);
   }
-  console.log(`realm-check: OK (${n} clients, ${input.registry.clients.length} service clients, roles ${CONTRACT_ROLES.length})`);
+  console.log(`realm-check: OK (${n} clients, ${input.registry.clients.length} service clients, ${(input.registry.ssoClients || []).length} staff SSO clients, roles ${CONTRACT_ROLES.length})`);
 }

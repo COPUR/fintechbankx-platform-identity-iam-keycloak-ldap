@@ -81,3 +81,16 @@ test("the committed realm JSON is the render of the registry", async () => {
   const { execFileSync } = await import("node:child_process");
   execFileSync(process.execPath, [path.join(root, "scripts/realm/render-realm.mjs"), "--check"], { stdio: "pipe" });
 });
+
+test("the Grafana SSO client exposes roles in userinfo and stays code + PKCE", () => {
+  const input = fresh();
+  const g = client(input, "svc-obs-grafana");
+  g.protocolMappers = [];
+  g.directAccessGrantsEnabled = true;
+  const errors = checkRealm(input);
+  assert.ok(errors.some((e) => e.includes("svc-obs-grafana: realm_access.roles mapper")));
+  assert.ok(errors.some((e) => e.includes("svc-obs-grafana: directAccessGrantsEnabled must be false")));
+  const input2 = fresh();
+  input2.importSecretRefs[secretEnvName("svc-obs-grafana")] = "ENVIRONMENT/grafana/oidc-client";
+  assert.ok(checkRealm(input2).some((e) => e.includes("must read ENVIRONMENT/observability-grafana/oidc-client")));
+});

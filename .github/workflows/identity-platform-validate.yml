@@ -85,7 +85,7 @@ jobs:
           for overlay in dev staging prod; do
             out="$RUNNER_TEMP/rendered/$overlay.yaml"
             kustomize build "deploy/kustomize/overlays/$overlay" > "$out"
-            if grep -nE 'ENVIRONMENT|IDENTITY_HOST|APP_HOST|AURORA_WRITER_ENDPOINT' "$out"; then
+            if grep -nE 'ENVIRONMENT|IDENTITY_HOST|APP_HOST|GRAFANA_HOST|AURORA_WRITER_ENDPOINT' "$out"; then
               echo "::error::unresolved placeholder in overlay $overlay"
               exit 1
             fi

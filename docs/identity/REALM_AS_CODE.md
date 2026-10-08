@@ -30,6 +30,28 @@ Change flow: edit the registry or the render script, run `node scripts/realm/ren
   | other service clients | none yet (no synchronous call found) |
 
 - **First-party public clients** `fintechbankx-web` and `fintechbankx-mobile`: authorization code + PKCE S256, no client credential, redirect URIs from the overlay, end-user roles only. DPoP is not required for first-party clients yet (contract addendum; Proposed for mobile later).
+- **Staff SSO client `svc-obs-grafana`** (registry section `ssoClients`): confidential, authorization code + PKCE S256, no implicit, password or client-credentials grant, policy `fbx-staff-sso-clients`. Redirect `<Grafana root>/login/generic_oauth` from the overlay (`FBX_GRAFANA_ROOT_URL`, e.g. `https://grafana.dev.fintechbankx.example`). A realm-role mapper puts `realm_access.roles` into the access token, ID token and userinfo; `fullScopeAllowed=false` with a scope mapping of `admin` and `auditor` only, so Grafana sees nothing else. Credential at `<env>/observability-grafana/oidc-client`. Grafana side (observability repo, Proposed):
+
+  ```ini
+  [auth.generic_oauth]
+  enabled = true
+  name = FinTechBankX
+  client_id = svc-obs-grafana
+  ; client credential from env GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET (ExternalSecret, property client_secret)
+  auth_url = https://<identity-host>/realms/fintechbankx/protocol/openid-connect/auth
+  token_url = http://keycloak.identity.svc.cluster.local:8080/realms/fintechbankx/protocol/openid-connect/token
+  api_url = http://keycloak.identity.svc.cluster.local:8080/realms/fintechbankx/protocol/openid-connect/userinfo
+  scopes = openid profile email
+  use_pkce = true
+  role_attribute_path = contains(realm_access.roles[*], 'admin') && 'Admin' || contains(realm_access.roles[*], 'auditor') && 'Viewer'
+  role_attribute_strict = true
+  ```
+
+  | Realm role | Grafana role |
+  |---|---|
+  | `admin` | `Admin` (organisation admin; add `allow_assign_grafana_admin = true` and `'GrafanaAdmin'` in the path only if server admin is wanted) |
+  | `auditor` | `Viewer` |
+  | anything else | login refused (`role_attribute_strict`) |
 - **Open-finance TPPs (FAPI 2.0)**: client policies apply Keycloak's built-in `fapi-2-dpop-security-profile` (DPoP-bound tokens) or `fapi-2-security-profile` (mTLS certificate-bound tokens) to clients tagged `fbx.client-type=open-finance-tpp` with `fbx.tpp.token-binding=dpop|mtls`; both enforce PAR, PKCE, confidential `private_key_jwt`/mTLS client authentication and PS256. A separate policy applies the DPoP profile to every Dynamic Client Registration request, because attribute conditions only match once a client exists. `of-tpp-conformance-template` is a **disabled** reference client; real TPP clients are onboarded through consent-authorization, never committed. PAR request URIs live 60 s.
 - **Service client baseline policy** (`fbx-service-client-baseline`): client-secret, client-jwt or mTLS authentication; implicit and password grants rejected; full scope disabled.
 - **Tokens and sessions**: access token 300 s; SSO idle 30 min, max 10 h; refresh tokens revoked on use (`revokeRefreshToken`, reuse 0); authorization code 60 s; offline sessions 30 days idle, 60 days max. Realm signs with RS256 (the Spring resource servers accept RS256 by default); FAPI clients are moved to PS256 by the FAPI profile.
@@ -56,6 +78,7 @@ Run against a local Keycloak 26.7.5 (same version as the CR) and OpenLDAP loaded
 - Authorization request without PKCE on `fintechbankx-web`: rejected (`Missing parameter: code_challenge_method`); with S256: login page.
 - LDAP full sync imported the test user into `/staff/fbx-loan-officer`; browser login with PKCE returned a token with role `loan_officer` and `aud` equal to the web client's registry audiences (no `account` audience).
 - Six wrong logins: user temporarily locked. Login and admin events recorded.
+- `svc-obs-grafana`: authorization request without PKCE rejected; code + PKCE login of an LDAP user in `fbx-admin` and `fbx-loan-officer` returned `realm_access.roles=["admin"]` in userinfo and ID token (scope mapping filters `loan_officer`); wrong client credential 401; client-credentials grant refused (`unauthorized_client`).
 - TPP rules: changing the template to client-secret authentication rejected (`invalid_client_metadata`); a non-conforming Dynamic Client Registration rejected, a conforming one (`private_key_jwt`, DPoP-bound) accepted; front-channel authorization without PAR rejected (400).
 - Gap found: a TPP client created through the admin API with non-conforming settings is accepted at creation (the attribute condition cannot match a client that does not exist yet); it is blocked on its first update and at the authorization endpoint. Onboard TPPs only through Dynamic Client Registration.
 

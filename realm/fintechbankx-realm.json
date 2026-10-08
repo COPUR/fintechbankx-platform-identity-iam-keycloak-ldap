@@ -1184,9 +1184,76 @@
         "roles"
       ],
       "optionalClientScopes": []
+    },
+    {
+      "clientId": "svc-obs-grafana",
+      "name": "Grafana (staff SSO)",
+      "description": "Confidential staff SSO client (authorization code + PKCE S256). Credential delivered via Secrets Manager <env>/observability-grafana/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_OBS_GRAFANA)",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "rootUrl": "$(env:FBX_GRAFANA_ROOT_URL)",
+      "baseUrl": "$(env:FBX_GRAFANA_ROOT_URL)",
+      "redirectUris": [
+        "$(env:FBX_GRAFANA_ROOT_URL)/login/generic_oauth"
+      ],
+      "webOrigins": [
+        "$(env:FBX_GRAFANA_ROOT_URL)"
+      ],
+      "attributes": {
+        "fbx.client-type": "staff-sso",
+        "fbx.service-slug": "observability-grafana",
+        "fbx.namespace": "observability",
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "$(env:FBX_GRAFANA_ROOT_URL)/login",
+        "use.refresh.tokens": "true",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm-roles-userinfo",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "web-origins",
+        "acr",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": []
     }
   ],
   "scopeMappings": [
+    {
+      "client": "svc-obs-grafana",
+      "roles": [
+        "admin",
+        "auditor"
+      ]
+    },
     {
       "client": "svc-ln-loan-lifecycle",
       "roles": [
@@ -1746,6 +1813,40 @@
         ]
       },
       {
+        "name": "fbx-staff-sso",
+        "description": "Confidential staff SSO clients (Grafana): authorization code with PKCE S256, no implicit or password grant.",
+        "executors": [
+          {
+            "executor": "secure-client-authenticator",
+            "configuration": {
+              "allowed-client-authenticators": [
+                "client-secret",
+                "client-jwt"
+              ],
+              "default-client-authenticator": "client-secret"
+            }
+          },
+          {
+            "executor": "pkce-enforcer",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          },
+          {
+            "executor": "reject-implicit-grant",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          },
+          {
+            "executor": "reject-ropc-grant",
+            "configuration": {
+              "auto-configure": "true"
+            }
+          }
+        ]
+      },
+      {
         "name": "fbx-first-party-public",
         "description": "OAuth 2.1 public clients (web, mobile): PKCE S256, no implicit or password grant, strict redirect URIs. DPoP is not required for first-party clients yet (platform contract addendum 2026-10-08).",
         "executors": [
@@ -1797,6 +1898,23 @@
         ],
         "profiles": [
           "fbx-service-client-baseline"
+        ]
+      },
+      {
+        "name": "fbx-staff-sso-clients",
+        "description": "Applies the staff SSO profile to clients tagged fbx.client-type=staff-sso.",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-attributes",
+            "configuration": {
+              "is_negative_logic": false,
+              "attributes": "[{\"key\":\"fbx.client-type\",\"value\":\"staff-sso\"}]"
+            }
+          }
+        ],
+        "profiles": [
+          "fbx-staff-sso"
         ]
       },
       {

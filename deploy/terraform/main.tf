@@ -16,7 +16,11 @@ locals {
   database     = "db_idn_keycloak_ldap_${var.environment}"
 
   # Client registry shared with the realm import (realm/service-clients.json).
-  service_clients = { for c in jsondecode(file("${path.module}/../../realm/service-clients.json")).clients : c.clientId => c }
+  client_registry = jsondecode(file("${path.module}/../../realm/service-clients.json"))
+  service_clients = merge(
+    { for c in local.client_registry.clients : c.clientId => c },
+    { for c in try(local.client_registry.ssoClients, []) : c.clientId => c },
+  )
 
   tags = merge({
     Service            = local.service_id

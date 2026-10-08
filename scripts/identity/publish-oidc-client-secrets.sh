@@ -14,7 +14,7 @@
 #
 #   --apply    write to Secrets Manager (otherwise dry run)
 #   --rotate   replace existing values (default: only fill empty/missing ones)
-#   --only     limit to one client id from realm/service-clients.json
+#   --only     limit to one client id from realm/service-clients.json (clients or ssoClients)
 #
 # Needs: aws CLI v2 (credentials for the target account), jq, openssl.
 # The secret containers come from deploy/terraform; this script never creates
@@ -59,7 +59,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 TOKEN_URI="${ISSUER}/protocol/openid-connect/token"
-mapfile -t ROWS < <(jq -r '.clients[] | [.clientId, .serviceSlug] | @tsv' "$REGISTRY")
+mapfile -t ROWS < <(jq -r '(.clients + (.ssoClients // []))[] | [.clientId, .serviceSlug] | @tsv' "$REGISTRY")
 
 changed=0
 skipped=0

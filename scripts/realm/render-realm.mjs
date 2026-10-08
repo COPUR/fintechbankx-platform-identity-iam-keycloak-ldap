@@ -47,6 +47,59 @@ const audienceMappers = (audiences) => audiences.map((aud) => ({
 }));
 const channel = Object.fromEntries(manifest.channelClients.map((c) => [c.clientId, c]));
 
+// Staff SSO clients (e.g. Grafana): confidential, authorization code + PKCE,
+// realm roles exposed in ID token and userinfo for the tool's role mapping.
+const ssoClients = (manifest.ssoClients || []).map((c) => ({
+  clientId: c.clientId,
+  name: c.displayName,
+  description: `Confidential staff SSO client (authorization code + PKCE S256). Credential delivered via Secrets Manager <env>/${c.serviceSlug}/oidc-client.`,
+  enabled: true,
+  protocol: "openid-connect",
+  publicClient: false,
+  clientAuthenticatorType: "client-secret",
+  secret: env(secretEnv(c.clientId)),
+  standardFlowEnabled: true,
+  implicitFlowEnabled: false,
+  directAccessGrantsEnabled: false,
+  serviceAccountsEnabled: false,
+  frontchannelLogout: true,
+  consentRequired: false,
+  fullScopeAllowed: false,
+  rootUrl: env(c.redirectPathEnv),
+  baseUrl: env(c.redirectPathEnv),
+  redirectUris: [`${env(c.redirectPathEnv)}/login/generic_oauth`],
+  webOrigins: [env(c.redirectPathEnv)],
+  attributes: {
+    "fbx.client-type": "staff-sso",
+    "fbx.service-slug": c.serviceSlug,
+    "fbx.namespace": c.namespace,
+    "pkce.code.challenge.method": "S256",
+    "post.logout.redirect.uris": `${env(c.redirectPathEnv)}/login`,
+    "use.refresh.tokens": "true",
+    "oauth2.device.authorization.grant.enabled": "false",
+    "oidc.ciba.grant.enabled": "false"
+  },
+  protocolMappers: [
+    {
+      name: "realm-roles-userinfo",
+      protocol: "openid-connect",
+      protocolMapper: "oidc-usermodel-realm-role-mapper",
+      consentRequired: false,
+      config: {
+        "claim.name": "realm_access.roles",
+        "jsonType.label": "String",
+        multivalued: "true",
+        "access.token.claim": "true",
+        "id.token.claim": "true",
+        "userinfo.token.claim": "true",
+        "introspection.token.claim": "true"
+      }
+    }
+  ],
+  defaultClientScopes: ["basic", "web-origins", "acr", "profile", "email"],
+  optionalClientScopes: []
+}));
+
 const serviceClients = manifest.clients.map((c) => ({
   clientId: c.clientId,
   name: c.displayName,
@@ -255,10 +308,12 @@ const realm = {
     ...serviceClients,
     publicClient("fintechbankx-web", "FinTechBankX web portal", "FBX_WEB_REDIRECT_URI", "FBX_WEB_ORIGIN", "FBX_WEB_POST_LOGOUT_REDIRECT_URI"),
     publicClient("fintechbankx-mobile", "FinTechBankX mobile app", "FBX_MOBILE_REDIRECT_URI", null, null),
-    tppTemplate
+    tppTemplate,
+    ...ssoClients
   ],
 
   scopeMappings: [
+    ...(manifest.ssoClients || []).map((c) => ({ client: c.clientId, roles: c.roles })),
     ...serviceClients.map((c) => ({ client: c.clientId, roles: ["service"] })),
     ...["fintechbankx-web", "fintechbankx-mobile"].map((client) => ({
       client,
@@ -359,6 +414,16 @@ const realm = {
         ]
       },
       {
+        name: "fbx-staff-sso",
+        description: "Confidential staff SSO clients (Grafana): authorization code with PKCE S256, no implicit or password grant.",
+        executors: [
+          { executor: "secure-client-authenticator", configuration: { "allowed-client-authenticators": ["client-secret", "client-jwt"], "default-client-authenticator": "client-secret" } },
+          { executor: "pkce-enforcer", configuration: { "auto-configure": "true" } },
+          { executor: "reject-implicit-grant", configuration: { "auto-configure": "true" } },
+          { executor: "reject-ropc-grant", configuration: { "auto-configure": "true" } }
+        ]
+      },
+      {
         name: "fbx-first-party-public",
         description: "OAuth 2.1 public clients (web, mobile): PKCE S256, no implicit or password grant, strict redirect URIs. DPoP is not required for first-party clients yet (platform contract addendum 2026-10-08).",
         executors: [
@@ -379,6 +444,13 @@ const realm = {
         enabled: true,
         conditions: [{ condition: "client-attributes", configuration: { "is_negative_logic": false, attributes: JSON.stringify([{ key: "fbx.client-type", value: "service" }]) } }],
         profiles: ["fbx-service-client-baseline"]
+      },
+      {
+        name: "fbx-staff-sso-clients",
+        description: "Applies the staff SSO profile to clients tagged fbx.client-type=staff-sso.",
+        enabled: true,
+        conditions: [{ condition: "client-attributes", configuration: { "is_negative_logic": false, attributes: JSON.stringify([{ key: "fbx.client-type", value: "staff-sso" }]) } }],
+        profiles: ["fbx-staff-sso"]
       },
       {
         name: "fbx-first-party-public-clients",

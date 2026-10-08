@@ -1,5 +1,5 @@
 {
-  "description": "Clients of realm fintechbankx and the audiences each may request. Source: platform contract (identity section and addendum 2026-10-08), repository bootstrap manifest, and call edges read from the service repos (mirrored in the mesh contract). One confidential client-credentials client per service (client id = service id); its credential lives in Secrets Manager <env>/<serviceSlug>/oidc-client and reaches the realm import job as env FBX_OIDC_SECRET_<CLIENT_ID upper-cased, - to _>. audiences = service ids the client may call; each becomes an oidc-audience-mapper so tokens carry aud=<callee service id>.",
+  "description": "Clients of realm fintechbankx and the audiences each may request. Source: platform contract (identity section and addendum 2026-10-08), repository bootstrap manifest, and call edges read from the service repos (mirrored in the mesh contract). ssoClients are confidential browser clients for staff tools (authorization code + PKCE). One confidential client-credentials client per service (client id = service id); its credential lives in Secrets Manager <env>/<serviceSlug>/oidc-client and reaches the realm import job as env FBX_OIDC_SECRET_<CLIENT_ID upper-cased, - to _>. audiences = service ids the client may call; each becomes an oidc-audience-mapper so tokens carry aud=<callee service id>.",
   "clients": [
     {
       "clientId": "svc-ln-loan-lifecycle",
@@ -41,7 +41,7 @@
       "namespace": "payments",
       "serviceAccount": "payment-recurring-mandates-service",
       "displayName": "Recurring Mandates Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -51,7 +51,7 @@
       "namespace": "payments",
       "serviceAccount": "payment-bulk-orchestration-service",
       "displayName": "Bulk Payment Orchestration Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -61,7 +61,7 @@
       "namespace": "payments",
       "serviceAccount": "payment-request-to-pay-service",
       "displayName": "Request to Pay Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -101,7 +101,7 @@
       "namespace": "open-finance",
       "serviceAccount": "consent-authorization-service",
       "displayName": "Open Finance Consent and Authorization Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -111,7 +111,7 @@
       "namespace": "open-finance",
       "serviceAccount": "personal-financial-data-service",
       "displayName": "Open Finance Personal Financial Data Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -121,7 +121,7 @@
       "namespace": "open-finance",
       "serviceAccount": "business-financial-data-service",
       "displayName": "Open Finance Business Financial Data Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -131,7 +131,7 @@
       "namespace": "open-finance",
       "serviceAccount": "payee-verification-service",
       "displayName": "Open Finance Payee Verification Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -141,7 +141,7 @@
       "namespace": "open-finance",
       "serviceAccount": "banking-metadata-service",
       "displayName": "Open Finance Banking Metadata Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -151,7 +151,7 @@
       "namespace": "open-finance",
       "serviceAccount": "open-products-catalog-service",
       "displayName": "Open Finance Products Catalog Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     },
@@ -161,7 +161,7 @@
       "namespace": "open-finance",
       "serviceAccount": "atm-directory-service",
       "displayName": "Open Finance ATM Directory Service",
-      "source": "bootstrap-manifest; confirmed by service thread 2026-10-08",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
     }
@@ -235,6 +235,24 @@
         "svc-of-open-products-catalog": "confirmed by service thread 2026-10-08 (open-finance resource service)",
         "svc-of-atm-directory": "confirmed by service thread 2026-10-08 (open-finance resource service)"
       }
+    }
+  ],
+  "ssoClients": [
+    {
+      "clientId": "svc-obs-grafana",
+      "serviceSlug": "observability-grafana",
+      "namespace": "observability",
+      "displayName": "Grafana (staff SSO)",
+      "redirectPathEnv": "FBX_GRAFANA_ROOT_URL",
+      "roles": [
+        "admin",
+        "auditor"
+      ],
+      "roleMapping": {
+        "admin": "Grafana Admin",
+        "auditor": "Grafana Viewer"
+      },
+      "source": "coordinator 2026-10-08 (observability pillar)"
     }
   ]
 }
