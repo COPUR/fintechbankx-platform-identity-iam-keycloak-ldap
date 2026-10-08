@@ -29,3 +29,16 @@ test("the jboss-logging success and error levels stay set", () => {
   assert.equal(option("spi-events-listener--jboss-logging--success-level")?.value, "info");
   assert.equal(option("spi-events-listener--jboss-logging--error-level")?.value, "warn");
 });
+
+// Aurora TLS (request-to-pay PR #14 review applies to Keycloak too):
+// sslmode=require trusts any certificate. The mesh repo publishes ConfigMap
+// rds-ca-bundle (key global-bundle.pem) in the identity namespace.
+test("the Keycloak database connection verifies the server certificate", () => {
+  assert.equal(option("db-url-properties")?.value, "?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem");
+  const spec = cr.spec.unsupported.podTemplate.spec;
+  assert.deepEqual(spec.volumes.find((v) => v.name === "database-ca"), {
+    name: "database-ca",
+    configMap: { name: "rds-ca-bundle", items: [{ key: "global-bundle.pem", path: "global-bundle.pem" }] }
+  });
+  assert.deepEqual(spec.containers[0].volumeMounts, [{ name: "database-ca", mountPath: "/etc/fintechbankx/rds-ca", readOnly: true }]);
+});

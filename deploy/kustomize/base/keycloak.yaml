@@ -2,7 +2,8 @@
 # - 3 instances spread across Availability Zones and nodes; PDB and HPA in
 #   this directory (the CR exposes the scale subresource).
 # - External Aurora PostgreSQL (deploy/terraform), credentials from
-#   ExternalSecret keycloak-db; TLS to the database (rds.force_ssl).
+#   ExternalSecret keycloak-db; TLS to the database (rds.force_ssl) with
+#   sslmode=verify-full against the mounted RDS CA bundle.
 # - TLS terminates at the Istio ingress gateway; inside the mesh traffic is
 #   mTLS (STRICT), so Keycloak listens on plain HTTP 8080 and trusts
 #   X-Forwarded-* from the gateway only (NetworkPolicy below + mesh policy).
@@ -60,8 +61,12 @@ spec:
       - impersonation
 
   additionalOptions:
+    # verify-full: the Aurora certificate must chain to the Amazon RDS CA and
+    # name the endpoint (sslmode=require would trust any certificate). The
+    # bundle is ConfigMap rds-ca-bundle, published in this namespace by the
+    # mesh repo's trust-manager Bundle and mounted below (podTemplate).
     - name: db-url-properties
-      value: "?sslmode=require"
+      value: "?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem"
     - name: health-enabled
       value: "true"
     - name: metrics-enabled
@@ -169,3 +174,16 @@ spec:
           proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true }'
       spec:
         serviceAccountName: keycloak
+        # The operator merges the first container with the Keycloak container.
+        containers:
+          - volumeMounts:
+              - name: database-ca
+                mountPath: /etc/fintechbankx/rds-ca
+                readOnly: true
+        volumes:
+          - name: database-ca
+            configMap:
+              name: rds-ca-bundle
+              items:
+                - key: global-bundle.pem
+                  path: global-bundle.pem
