@@ -1,5 +1,36 @@
 # fintechbankx-platform-identity-iam-keycloak-ldap
 
+## What this repository provides (Proposed)
+
+The deployable identity platform of FinTechBankX: Keycloak realm `fintechbankx` on EKS, federated to a directory, with per-service OIDC clients. Nothing here is deployed yet; everything is **Proposed** until the Identity Platform Squad merges and releases it.
+
+| Area | Path | Doc |
+|---|---|---|
+| Realm as code (roles, groups, 15 service clients with audience mappers, web/mobile PKCE clients, FAPI 2.0 TPP policies, LDAP federation, token lifetimes, brute force, events) | `realm/` | [REALM_AS_CODE](docs/identity/REALM_AS_CODE.md) |
+| Keycloak 26.7.5 on EKS via the Keycloak Operator, kustomize base + dev/staging/prod overlays, realm import Job | `deploy/kustomize/` | [KEYCLOAK_ON_EKS](docs/identity/KEYCLOAK_ON_EKS.md) |
+| Aurora PostgreSQL (terraform-modules `aurora-postgresql`), Secrets Manager containers, KMS | `deploy/terraform/` | [KEYCLOAK_ON_EKS](docs/identity/KEYCLOAK_ON_EKS.md) |
+| OpenLDAP for dev/staging, corporate directory (AWS Managed Microsoft AD) for prod | `deploy/kustomize/components/openldap/` | [DIRECTORY_FEDERATION](docs/identity/DIRECTORY_FEDERATION.md) |
+| Per-service client credential delivery to `<env>/<service-slug>/oidc-client` | `scripts/identity/` | [CLIENT_SECRET_DELIVERY](docs/identity/CLIENT_SECRET_DELIVERY.md) |
+| CI: realm contract check, render drift, kustomize + kubeconform per overlay, terraform fmt/validate, shellcheck | `.github/workflows/identity-platform-validate.yml`, `scripts/ci/` | |
+
+### How a service consumes it
+
+- Issuer `https://<identity-host>/realms/fintechbankx`; JWKS in-cluster at `http://keycloak.identity.svc.cluster.local:8080/realms/fintechbankx/protocol/openid-connect/certs`.
+- Validate `aud` contains your service id; map `realm_access.roles` (`customer`, `banker`, `loan_officer`, `admin`, `service`, `auditor`, `compliance_officer`) to `ROLE_*`.
+- Your client id is your service id; read the credential with an ExternalSecret from `<env>/<service-slug>/oidc-client` (ClusterSecretStore `aws-secrets-manager`).
+- To add a client or an audience, change `realm/service-clients.json` and run `node scripts/realm/render-realm.mjs` (PR to this repository).
+
+### Local checks
+
+```bash
+npm ci && npm test                       # validator unit tests
+node scripts/realm/render-realm.mjs --check
+node scripts/ci/check-realm.mjs
+kustomize build deploy/kustomize/overlays/dev | kubeconform -strict -summary -
+```
+
+The legacy monolith seed under `k8s/envoy/`, `security/vault/` and `security/service-architecture/` is kept for reference only; it targets the monolith namespaces (`banking-production`) and is not part of the deployable path.
+
 Bu repository, FinTechBankX DDD/EDA dönüşümünde **svc-idn-keycloak-ldap** servis yetkinliğinin kaynak kodunu, kontratlarını ve operasyonel guardrail'lerini içerir.
 
 ## Sorumluluk ve Sahiplik
@@ -60,13 +91,6 @@ Bu repository, FinTechBankX DDD/EDA dönüşümünde **svc-idn-keycloak-ldap** s
 ## Katkı
 - Katkı süreci için `CONTRIBUTING.md` ve squad runbook'ları izlenmelidir.
 - PR'larda mimari kararlar ADR veya backlog referansı ile ilişkilendirilmelidir.
-
-## Cell-Based Architecture
-
-This repository participates in the FinTechBankX cell-based resilience program.
-
-- Plan: \
-- Backlog: \
 
 <!-- cell-architecture-start -->
 ## Cell-Based Architecture

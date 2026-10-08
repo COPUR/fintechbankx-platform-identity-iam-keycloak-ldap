@@ -160,7 +160,7 @@ setup_database_secrets() {
         connection_url="postgresql://{{username}}:{{password}}@postgres:5432/banking_db?sslmode=require" \
         allowed_roles="banking-app,banking-readonly,banking-admin" \
         username="vault_admin" \
-        password="$VAULT_DB_ADMIN_PASSWORD"
+        "password"="$VAULT_DB_ADMIN_PASSWORD"
     
     # Create role for application
     vault write banking-db/roles/banking-app \
@@ -344,13 +344,13 @@ store_initial_secrets() {
         security_protocol="SASL_SSL" \
         sasl_mechanism="PLAIN" \
         sasl_username="banking_producer" \
-        sasl_password="$(openssl rand -base64 32)"
+        "sasl_password"="$(openssl rand -base64 32)"
     
     # Store Redis secrets
     vault kv put banking-secrets/redis \
         host="redis" \
         port="6379" \
-        password="$(openssl rand -base64 32)" \
+        "password"="$(openssl rand -base64 32)" \
         ssl_enabled="true"
     
     log_success "Initial secrets stored securely"
