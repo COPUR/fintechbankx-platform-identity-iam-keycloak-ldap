@@ -26,13 +26,15 @@
         "svc-rsk-decisioning",
         "svc-cmp-evidence",
         "svc-of-consent-authorization",
-        "svc-of-payee-verification"
+        "svc-of-payee-verification",
+        "svc-cus-profile-kyc"
       ],
       "audienceProvenance": {
         "svc-rsk-decisioning": "confirmed by service thread 2026-10-08",
         "svc-cmp-evidence": "confirmed by service thread 2026-10-08",
         "svc-of-consent-authorization": "confirmed by service thread 2026-10-08",
-        "svc-of-payee-verification": "confirmed by service thread 2026-10-08"
+        "svc-of-payee-verification": "confirmed by service thread 2026-10-08",
+        "svc-cus-profile-kyc": "confirmed by customer thread 2026-10-08: GET /api/v1/customers/{id}/kyc-status (SERVICE_CALLERS_KYC)"
       }
     },
     {

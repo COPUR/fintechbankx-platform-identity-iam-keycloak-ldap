@@ -145,3 +145,13 @@ test("the customer service may only view and manage members of /customers", () =
   mutate((x) => { x.decisionStrategy = "AFFIRMATIVE"; }, "fbx-customers-customer-service: decisionStrategy must be UNANIMOUS");
   mutate((x) => { delete x.reason; }, "fbx-customers-customer-service: reason required");
 });
+
+test("payment initiation tokens carry the customer audience (kyc-status call)", () => {
+  const input = fresh();
+  const auds = client(input, "svc-pay-initiation-settlement").protocolMappers
+    .filter((m) => m.protocolMapper === "oidc-audience-mapper")
+    .map((m) => m.config["included.client.audience"]);
+  assert.ok(auds.includes("svc-cus-profile-kyc"), auds.join(","));
+  const entry = input.registry.clients.find((c) => c.clientId === "svc-pay-initiation-settlement");
+  assert.match(entry.audienceProvenance["svc-cus-profile-kyc"], /^confirmed by customer thread 2026-10-08/);
+});

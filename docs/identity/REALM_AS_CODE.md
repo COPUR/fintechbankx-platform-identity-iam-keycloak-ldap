@@ -25,7 +25,7 @@ Change flow: edit the registry or the render script, run `node scripts/realm/ren
   | Client | aud |
   |---|---|
   | `svc-ln-loan-lifecycle` | `svc-cus-profile-kyc` (confirmed) |
-  | `svc-pay-initiation-settlement` | `svc-rsk-decisioning`, `svc-cmp-evidence`, `svc-of-consent-authorization`, `svc-of-payee-verification` (confirmed) |
+  | `svc-pay-initiation-settlement` | `svc-rsk-decisioning`, `svc-cmp-evidence`, `svc-of-consent-authorization`, `svc-of-payee-verification`, `svc-cus-profile-kyc` (kyc-status) (confirmed) |
   | `fintechbankx-web` | `svc-cus-profile-kyc` (confirmed); loan, the four payment services, `svc-rsk-decisioning`, `svc-cmp-evidence` (derived) |
   | `fintechbankx-mobile` | `svc-cus-profile-kyc` (confirmed); loan and the four payment services (derived) |
   | TPP clients (`of-tpp-conformance-template`) | the six open-finance resource services (confirmed), `svc-of-consent-authorization` (derived) |
