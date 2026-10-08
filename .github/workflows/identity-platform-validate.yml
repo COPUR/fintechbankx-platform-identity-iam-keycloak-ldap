@@ -127,8 +127,16 @@ jobs:
         run: terraform fmt -check -recursive
 
       - name: terraform init (no backend) and validate
+        env:
+          # The modules this root uses land on terraform-modules main with its
+          # open platform PR. Until that merges, validate against that PR's
+          # branch; set back to main (or a release tag) afterwards.
+          TF_MODULES_REF: claude/platform-deployable-tkl0z7
         run: |
           set -euo pipefail
+          if [ "$TF_MODULES_REF" != "main" ]; then
+            sed -i "s#fintechbankx-platform-delivery-iac-terraform-modules.git//\(modules/[a-z0-9-]*\)?ref=main#fintechbankx-platform-delivery-iac-terraform-modules.git//\1?ref=${TF_MODULES_REF}#" ./*.tf
+          fi
           terraform init -backend=false -input=false
           terraform validate
 
