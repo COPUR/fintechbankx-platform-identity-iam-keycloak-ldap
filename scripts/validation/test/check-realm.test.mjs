@@ -155,3 +155,79 @@ test("payment initiation tokens carry the customer audience (kyc-status call)", 
   const entry = input.registry.clients.find((c) => c.clientId === "svc-pay-initiation-settlement");
   assert.match(entry.audienceProvenance["svc-cus-profile-kyc"], /^confirmed by customer thread 2026-10-08/);
 });
+
+const STAFF = ["admin", "auditor", "banker", "compliance_officer", "loan_officer"];
+const scopeRoles = (input, id) => [...(input.realm.scopeMappings.find((s) => s.client === id)?.roles || [])].sort();
+const auds = (input, id) => client(input, id).protocolMappers.filter((m) => m.protocolMapper === "oidc-audience-mapper").map((m) => m.config["included.client.audience"]).sort();
+
+test("customer channels map only customer; the staff web client maps only staff roles", () => {
+  const input = fresh();
+  assert.deepEqual(scopeRoles(input, "fintechbankx-web"), ["customer"]);
+  assert.deepEqual(scopeRoles(input, "fintechbankx-mobile"), ["customer"]);
+  assert.deepEqual(scopeRoles(input, "fintechbankx-staff-web"), STAFF);
+  input.realm.scopeMappings.find((s) => s.client === "fintechbankx-web").roles.push("admin");
+  assert.ok(checkRealm(input).some((e) => e.includes("fintechbankx-web: scope mapping admin,customer != customer")));
+  const input2 = fresh();
+  input2.realm.scopeMappings.find((s) => s.client === "fintechbankx-staff-web").roles.push("customer");
+  assert.ok(checkRealm(input2).some((e) => e.startsWith("fintechbankx-staff-web: scope mapping")));
+});
+
+test("risk and compliance audiences moved from the customer web client to staff web", () => {
+  const input = fresh();
+  for (const a of ["svc-rsk-decisioning", "svc-cmp-evidence"]) {
+    assert.ok(!auds(input, "fintechbankx-web").includes(a));
+    assert.ok(!auds(input, "fintechbankx-mobile").includes(a));
+    assert.ok(auds(input, "fintechbankx-staff-web").includes(a));
+  }
+  for (const a of ["svc-ln-loan-lifecycle", "svc-cus-profile-kyc", "svc-pay-initiation-settlement"]) assert.ok(auds(input, "fintechbankx-staff-web").includes(a));
+  input.registry.channelClients.find((c) => c.clientId === "fintechbankx-web").audiences.push("svc-cmp-evidence");
+  assert.ok(checkRealm(input).some((e) => e.includes("fintechbankx-web: staff-only audience svc-cmp-evidence on a customer client")));
+});
+
+test("staff web: short sessions, no optional scopes, no customer-id scope", () => {
+  const input = fresh();
+  const c = client(input, "fintechbankx-staff-web");
+  assert.deepEqual(c.optionalClientScopes, []);
+  assert.ok(!c.defaultClientScopes.includes("customer-id"));
+  assert.equal(c.attributes["client.session.idle.timeout"], "900");
+  assert.equal(c.attributes["client.session.max.lifespan"], "28800");
+  assert.equal(c.publicClient, true);
+  assert.equal(c.attributes["pkce.code.challenge.method"], "S256");
+  c.optionalClientScopes = ["offline_access"];
+  c.defaultClientScopes.push("customer-id");
+  c.attributes["client.session.idle.timeout"] = "3600";
+  const errors = checkRealm(input);
+  assert.ok(errors.some((e) => e.includes("fintechbankx-staff-web: offline_access is not allowed")));
+  assert.ok(errors.some((e) => e.includes("fintechbankx-staff-web: staff clients must not carry the customer-id scope")));
+  assert.ok(errors.some((e) => e.includes("fintechbankx-staff-web: client.session.idle.timeout must be 1..900")));
+});
+
+test("offline tokens: mobile only, 14 days idle, 30 days max", () => {
+  const input = fresh();
+  assert.deepEqual(client(input, "fintechbankx-web").optionalClientScopes, []);
+  assert.ok(!client(input, "fintechbankx-web").defaultClientScopes.includes("offline_access"));
+  const m = client(input, "fintechbankx-mobile");
+  assert.deepEqual(m.optionalClientScopes, ["offline_access"]);
+  assert.equal(m.attributes["client.offline.session.idle.timeout"], "1209600");
+  assert.equal(m.attributes["client.offline.session.max.lifespan"], "2592000");
+  assert.equal(input.realm.offlineSessionIdleTimeout, 1209600);
+  assert.equal(input.realm.offlineSessionMaxLifespan, 2592000);
+  assert.equal(input.realm.offlineSessionMaxLifespanEnabled, true);
+  client(input, "fintechbankx-web").optionalClientScopes = ["offline_access"];
+  input.realm.offlineSessionMaxLifespan = 5184000;
+  const errors = checkRealm(input);
+  assert.ok(errors.some((e) => e.includes("fintechbankx-web: offline_access is not allowed")));
+  assert.ok(errors.some((e) => e.includes("offlineSessionMaxLifespan must be 1..2592000")));
+});
+
+test("every overlay sets the staff web redirect, origin and post-logout URIs", async () => {
+  const fs = await import("node:fs");
+  const env = fresh().importEnv;
+  for (const k of ["FBX_STAFF_WEB_REDIRECT_URI", "FBX_STAFF_WEB_ORIGIN", "FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI"]) {
+    assert.ok(k in env, k);
+    for (const o of ["dev", "staging", "prod"]) {
+      const text = fs.readFileSync(path.join(root, `deploy/kustomize/overlays/${o}/kustomization.yaml`), "utf8");
+      assert.ok(text.includes(`path: /data/${k}`), `${o} lacks ${k}`);
+    }
+  }
+});

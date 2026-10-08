@@ -184,7 +184,32 @@
     {
       "clientId": "fintechbankx-web",
       "type": "first-party-public",
-      "displayName": "FinTechBankX web portal (customers and staff)",
+      "userType": "customer",
+      "offlineAccess": false,
+      "displayName": "FinTechBankX web portal (customers)",
+      "audiences": [
+        "svc-ln-loan-lifecycle",
+        "svc-pay-initiation-settlement",
+        "svc-pay-recurring-mandates",
+        "svc-pay-bulk-orchestration",
+        "svc-pay-request-to-pay",
+        "svc-cus-profile-kyc"
+      ],
+      "audienceProvenance": {
+        "svc-ln-loan-lifecycle": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-initiation-settlement": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-recurring-mandates": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-bulk-orchestration": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-request-to-pay": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08"
+      }
+    },
+    {
+      "clientId": "fintechbankx-staff-web",
+      "type": "first-party-public",
+      "userType": "staff",
+      "offlineAccess": false,
+      "displayName": "FinTechBankX staff web portal (bankers, loan officers, admins, auditors, compliance)",
       "audiences": [
         "svc-ln-loan-lifecycle",
         "svc-pay-initiation-settlement",
@@ -202,13 +227,15 @@
         "svc-pay-bulk-orchestration": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
         "svc-pay-request-to-pay": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
         "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08",
-        "svc-rsk-decisioning": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
-        "svc-cmp-evidence": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread"
+        "svc-rsk-decisioning": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread; moved from fintechbankx-web (security review 2026-10-08: staff roles only on the staff client)",
+        "svc-cmp-evidence": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread; moved from fintechbankx-web (security review 2026-10-08: staff roles only on the staff client)"
       }
     },
     {
       "clientId": "fintechbankx-mobile",
       "type": "first-party-public",
+      "userType": "customer",
+      "offlineAccess": true,
       "displayName": "FinTechBankX mobile app (customers)",
       "audiences": [
         "svc-ln-loan-lifecycle",

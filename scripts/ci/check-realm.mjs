@@ -19,6 +19,7 @@ export const STAFF_ROLE_GROUPS = {
   "fbx-auditor": "auditor",
   "fbx-compliance-officer": "compliance_officer"
 };
+const CUSTOMER_ID_SCOPE = "customer-id";
 const PLACEHOLDER = /^\$\(env:[A-Z0-9_]+\)$/;
 const SECRET_KEY = /(secret|credential|password|passwd|private.?key)/i;
 
@@ -41,6 +42,15 @@ function walk(value, visit, trail = []) {
     }
   }
 }
+
+export const STAFF_ROLES = Object.values(STAFF_ROLE_GROUPS);
+// Audiences only staff may reach (risk decisions, compliance evidence).
+export const STAFF_ONLY_AUDIENCES = ["svc-rsk-decisioning", "svc-cmp-evidence"];
+const MAX_OFFLINE_IDLE = 1209600; // 14 days
+const MAX_OFFLINE_LIFESPAN = 2592000; // 30 days
+const MAX_STAFF_IDLE = 900;
+const MAX_STAFF_LIFESPAN = 28800;
+const inRange = (v, max) => Number(v) > 0 && Number(v) <= max;
 
 export const ADMIN_PERMISSION_SCOPES = ["view-members", "manage-members"];
 
@@ -65,6 +75,9 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
   if (realm.adminEventsEnabled !== true) err("adminEventsEnabled must be true");
   if (!(realm.accessTokenLifespan > 0 && realm.accessTokenLifespan <= 900)) err("accessTokenLifespan must be 1..900 seconds");
   if (realm.sslRequired === "none") err("sslRequired must not be none");
+  if (realm.offlineSessionMaxLifespanEnabled !== true) err("offlineSessionMaxLifespanEnabled must be true");
+  if (!inRange(realm.offlineSessionIdleTimeout, MAX_OFFLINE_IDLE)) err(`offlineSessionIdleTimeout must be 1..${MAX_OFFLINE_IDLE}`);
+  if (!inRange(realm.offlineSessionMaxLifespan, MAX_OFFLINE_LIFESPAN)) err(`offlineSessionMaxLifespan must be 1..${MAX_OFFLINE_LIFESPAN}`);
   // Fine-grained admin permissions v2; a default group would also be joined
   // by every new service account, so none.
   if (realm.adminPermissionsEnabled !== true) err("adminPermissionsEnabled must be true (fine-grained admin permissions v2)");
@@ -133,7 +146,32 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
       if (c.secret) err(`${c.clientId}: public client must not have a secret`);
       if (c.attributes?.["pkce.code.challenge.method"] !== "S256") err(`${c.clientId}: PKCE S256 required`);
       if (c.implicitFlowEnabled !== false || c.directAccessGrantsEnabled !== false) err(`${c.clientId}: implicit and password grants must be off`);
+      // One user type per client: customer clients map only customer, the
+      // staff client only the staff roles (never both on one client).
+      const e = (m) => err(`${c.clientId}: ${m}`);
+      if (!["customer", "staff"].includes(entry.userType)) e("registry userType must be customer or staff");
+      const staff = entry.userType === "staff";
+      const wantRoles = (staff ? [...STAFF_ROLES] : ["customer"]).sort();
+      const sm = [...((realm.scopeMappings || []).find((x) => x.client === c.clientId)?.roles || [])].sort();
+      if (c.fullScopeAllowed !== false) e("fullScopeAllowed must be false");
+      if (JSON.stringify(sm) !== JSON.stringify(wantRoles)) e(`scope mapping ${sm.join(",")} != ${wantRoles.join(",")}`);
+      if (!staff) for (const a of new Set([...audiences(c), ...(entry.audiences || [])])) if (STAFF_ONLY_AUDIENCES.includes(a)) e(`staff-only audience ${a} on a customer client`);
+      const scopes = [...(c.defaultClientScopes || []), ...(c.optionalClientScopes || [])];
+      if (scopes.includes("offline_access")) {
+        if (entry.offlineAccess !== true || staff) e("offline_access is not allowed (registry offlineAccess, customer clients only)");
+        if (!inRange(c.attributes?.["client.offline.session.idle.timeout"], MAX_OFFLINE_IDLE)) e(`client.offline.session.idle.timeout must be 1..${MAX_OFFLINE_IDLE}`);
+        if (!inRange(c.attributes?.["client.offline.session.max.lifespan"], MAX_OFFLINE_LIFESPAN)) e(`client.offline.session.max.lifespan must be 1..${MAX_OFFLINE_LIFESPAN}`);
+      }
+      if (staff) {
+        if ((c.optionalClientScopes || []).length) e("staff clients must not have optional scopes");
+        if (scopes.includes(CUSTOMER_ID_SCOPE)) e("staff clients must not carry the customer-id scope");
+        if (!inRange(c.attributes?.["client.session.idle.timeout"], MAX_STAFF_IDLE)) e(`client.session.idle.timeout must be 1..${MAX_STAFF_IDLE}`);
+        if (!inRange(c.attributes?.["client.session.max.lifespan"], MAX_STAFF_LIFESPAN)) e(`client.session.max.lifespan must be 1..${MAX_STAFF_LIFESPAN}`);
+      } else if (!scopes.includes(CUSTOMER_ID_SCOPE)) {
+        e("customer clients must carry the customer-id scope");
+      }
     }
+    if (entry.type !== "first-party-public" && (c.optionalClientScopes || []).includes("offline_access")) err(`${c.clientId}: offline_access is not allowed`);
     if (entry.type === "open-finance-tpp") {
       if (c.publicClient !== false) err(`${c.clientId}: TPP clients are confidential`);
       if (c.attributes?.["require.pushed.authorization.requests"] !== "true") err(`${c.clientId}: PAR required`);

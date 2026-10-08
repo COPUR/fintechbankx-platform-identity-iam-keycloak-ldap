@@ -25,9 +25,9 @@
   "ssoSessionMaxLifespanRememberMe": 0,
   "clientSessionIdleTimeout": 0,
   "clientSessionMaxLifespan": 0,
-  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionIdleTimeout": 1209600,
   "offlineSessionMaxLifespanEnabled": true,
-  "offlineSessionMaxLifespan": 5184000,
+  "offlineSessionMaxLifespan": 2592000,
   "accessCodeLifespan": 60,
   "accessCodeLifespanUserAction": 300,
   "accessCodeLifespanLogin": 1800,
@@ -1021,8 +1021,8 @@
     },
     {
       "clientId": "fintechbankx-web",
-      "name": "FinTechBankX web portal",
-      "description": "First-party public client (authorization code + PKCE S256, no client credential). FinTechBankX web portal.",
+      "name": "FinTechBankX web portal (customers)",
+      "description": "First-party public client (authorization code + PKCE S256, no client credential). FinTechBankX web portal (customers); customer roles only.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": true,
@@ -1040,12 +1040,135 @@
       ],
       "attributes": {
         "fbx.client-type": "first-party-public",
+        "fbx.user-type": "customer",
         "pkce.code.challenge.method": "S256",
         "require.pushed.authorization.requests": "false",
         "use.refresh.tokens": "true",
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false",
         "post.logout.redirect.uris": "$(env:FBX_WEB_POST_LOGOUT_REDIRECT_URI)"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-ln-loan-lifecycle",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-ln-loan-lifecycle",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-initiation-settlement",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-initiation-settlement",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-recurring-mandates",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-recurring-mandates",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-bulk-orchestration",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-bulk-orchestration",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-pay-request-to-pay",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-request-to-pay",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email",
+        "customer-id"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "fintechbankx-staff-web",
+      "name": "FinTechBankX staff web portal",
+      "description": "First-party public client (authorization code + PKCE S256, no client credential). FinTechBankX staff web portal; staff roles only.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "fullScopeAllowed": false,
+      "redirectUris": [
+        "$(env:FBX_STAFF_WEB_REDIRECT_URI)"
+      ],
+      "webOrigins": [
+        "$(env:FBX_STAFF_WEB_ORIGIN)"
+      ],
+      "attributes": {
+        "fbx.client-type": "first-party-public",
+        "fbx.user-type": "staff",
+        "pkce.code.challenge.method": "S256",
+        "require.pushed.authorization.requests": "false",
+        "use.refresh.tokens": "true",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "post.logout.redirect.uris": "$(env:FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI)",
+        "client.session.idle.timeout": "900",
+        "client.session.max.lifespan": "28800"
       },
       "protocolMappers": [
         {
@@ -1159,17 +1282,14 @@
         "acr",
         "profile",
         "roles",
-        "email",
-        "customer-id"
+        "email"
       ],
-      "optionalClientScopes": [
-        "offline_access"
-      ]
+      "optionalClientScopes": []
     },
     {
       "clientId": "fintechbankx-mobile",
       "name": "FinTechBankX mobile app",
-      "description": "First-party public client (authorization code + PKCE S256, no client credential). FinTechBankX mobile app.",
+      "description": "First-party public client (authorization code + PKCE S256, no client credential). FinTechBankX mobile app; customer roles only.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": true,
@@ -1185,11 +1305,14 @@
       "webOrigins": [],
       "attributes": {
         "fbx.client-type": "first-party-public",
+        "fbx.user-type": "customer",
         "pkce.code.challenge.method": "S256",
         "require.pushed.authorization.requests": "false",
         "use.refresh.tokens": "true",
         "oauth2.device.authorization.grant.enabled": "false",
-        "oidc.ciba.grant.enabled": "false"
+        "oidc.ciba.grant.enabled": "false",
+        "client.offline.session.idle.timeout": "1209600",
+        "client.offline.session.max.lifespan": "2592000"
       },
       "protocolMappers": [
         {
@@ -1623,7 +1746,12 @@
     {
       "client": "fintechbankx-web",
       "roles": [
-        "customer",
+        "customer"
+      ]
+    },
+    {
+      "client": "fintechbankx-staff-web",
+      "roles": [
         "banker",
         "loan_officer",
         "admin",
@@ -1634,12 +1762,7 @@
     {
       "client": "fintechbankx-mobile",
       "roles": [
-        "customer",
-        "banker",
-        "loan_officer",
-        "admin",
-        "auditor",
-        "compliance_officer"
+        "customer"
       ]
     }
   ],

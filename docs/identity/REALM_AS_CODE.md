@@ -26,12 +26,21 @@ Change flow: edit the registry or the render script, run `node scripts/realm/ren
   |---|---|
   | `svc-ln-loan-lifecycle` | `svc-cus-profile-kyc` (confirmed) |
   | `svc-pay-initiation-settlement` | `svc-rsk-decisioning`, `svc-cmp-evidence`, `svc-of-consent-authorization`, `svc-of-payee-verification`, `svc-cus-profile-kyc` (kyc-status) (confirmed) |
-  | `fintechbankx-web` | `svc-cus-profile-kyc` (confirmed); loan, the four payment services, `svc-rsk-decisioning`, `svc-cmp-evidence` (derived) |
+  | `fintechbankx-web` (customers) | `svc-cus-profile-kyc` (confirmed); loan and the four payment services (derived) |
+  | `fintechbankx-staff-web` (staff) | `svc-cus-profile-kyc` (confirmed); loan, the four payment services, `svc-rsk-decisioning`, `svc-cmp-evidence` (derived; risk and compliance moved here from `fintechbankx-web`) |
   | `fintechbankx-mobile` | `svc-cus-profile-kyc` (confirmed); loan and the four payment services (derived) |
   | TPP clients (`of-tpp-conformance-template`) | the six open-finance resource services (confirmed), `svc-of-consent-authorization` (derived) |
   | other service clients | none yet (no synchronous call found) |
 
-- **First-party public clients** `fintechbankx-web` and `fintechbankx-mobile`: authorization code + PKCE S256, no client credential, redirect URIs from the overlay, end-user roles only. DPoP is not required for first-party clients yet (contract addendum; Proposed for mobile later).
+- **First-party public clients**: authorization code + PKCE S256, no client credential, redirect URIs from the overlay, `fullScopeAllowed=false`. Each client serves one user type (registry `userType`), so a token from a customer channel can never carry a staff role and the other way round (security review 2026-10-08). DPoP is not required for first-party clients yet (contract addendum; Proposed for mobile later).
+
+  | Client | Roles in the token | Scopes | Sessions |
+  |---|---|---|---|
+  | `fintechbankx-web` | `customer` only | `customer-id` default; **no** `offline_access` | realm SSO (30 min idle, 10 h max) |
+  | `fintechbankx-mobile` | `customer` only | `customer-id` default; `offline_access` optional | offline token 14 days idle, 30 days max (client and realm) |
+  | `fintechbankx-staff-web` | `banker`, `loan_officer`, `admin`, `auditor`, `compliance_officer` | no `customer-id`, no optional scopes (no offline tokens) | client session 15 min idle, 8 h max |
+
+  Redirect, origin and post-logout URIs of the staff portal come from `FBX_STAFF_WEB_REDIRECT_URI`, `FBX_STAFF_WEB_ORIGIN` and `FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI` (realm import ConfigMap, set per overlay; base value host `STAFF_APP_HOST`). A staff user who signs in to `fintechbankx-web` gets a token without roles, and a customer in `fintechbankx-staff-web` likewise. `check-realm.mjs` enforces the role split, the staff-only audiences (`svc-rsk-decisioning`, `svc-cmp-evidence`) and the session and offline limits.
 - **Staff SSO client `svc-obs-grafana`** (registry section `ssoClients`): confidential, authorization code + PKCE S256, no implicit, password or client-credentials grant, policy `fbx-staff-sso-clients`. Redirect `<Grafana root>/login/generic_oauth` from the overlay (`FBX_GRAFANA_ROOT_URL`, e.g. `https://grafana.dev.fintechbankx.example`). A realm-role mapper puts `realm_access.roles` into the access token, ID token and userinfo; `fullScopeAllowed=false` with a scope mapping of `admin` and `auditor` only, so Grafana sees nothing else. Credential at `<env>/observability-grafana/oidc-client`. Grafana side (observability repo, Proposed):
 
   ```ini
@@ -56,7 +65,7 @@ Change flow: edit the registry or the render script, run `node scripts/realm/ren
   | anything else | login refused (`role_attribute_strict`) |
 - **Open-finance TPPs (FAPI 2.0)**: client policies apply Keycloak's built-in `fapi-2-dpop-security-profile` (DPoP-bound tokens) or `fapi-2-security-profile` (mTLS certificate-bound tokens) to clients tagged `fbx.client-type=open-finance-tpp` with `fbx.tpp.token-binding=dpop|mtls`; both enforce PAR, PKCE, confidential `private_key_jwt`/mTLS client authentication and PS256. A separate policy applies the DPoP profile to every Dynamic Client Registration request, because attribute conditions only match once a client exists. `of-tpp-conformance-template` is a **disabled** reference client; real TPP clients are onboarded through consent-authorization, never committed. PAR request URIs live 60 s.
 - **Service client baseline policy** (`fbx-service-client-baseline`): client-secret, client-jwt or mTLS authentication; implicit and password grants rejected; full scope disabled.
-- **Tokens and sessions**: access token 300 s; SSO idle 30 min, max 10 h; refresh tokens revoked on use (`revokeRefreshToken`, reuse 0); authorization code 60 s; offline sessions 30 days idle, 60 days max. Realm signs with RS256 (the Spring resource servers accept RS256 by default); FAPI clients are moved to PS256 by the FAPI profile.
+- **Tokens and sessions**: access token 300 s; SSO idle 30 min, max 10 h; refresh tokens revoked on use (`revokeRefreshToken`, reuse 0); authorization code 60 s; offline sessions (mobile only) 14 days idle, 30 days max. Realm signs with RS256 (the Spring resource servers accept RS256 by default); FAPI clients are moved to PS256 by the FAPI profile.
 - **Brute-force protection**: after 5 failures the account is locked temporarily, waits growing by 60 s up to 15 min. No permanent lockout, so an attacker cannot disable staff accounts; lockouts appear in the login events.
 - **Password policy** (local accounts only; staff authenticate against the directory): length 14-128, upper, lower, digit, special, not username/email, history 12, expiry 90 days.
 - **Events**: login events (90 days) and admin events with representation details (90 days), plus the `jboss-logging` listener so both reach the log pipeline.

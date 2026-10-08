@@ -64,6 +64,15 @@ patches:
       - op: replace
         path: /data/FBX_WEB_POST_LOGOUT_REDIRECT_URI
         value: https://app.fintechbankx.example/
+      - op: replace
+        path: /data/FBX_STAFF_WEB_REDIRECT_URI
+        value: https://staff.fintechbankx.example/auth/callback
+      - op: replace
+        path: /data/FBX_STAFF_WEB_ORIGIN
+        value: https://staff.fintechbankx.example
+      - op: replace
+        path: /data/FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI
+        value: https://staff.fintechbankx.example/
   # LDAPS to AWS Managed Microsoft AD: trust the directory's CA (published
   # by the platform as ConfigMap corporate-directory-ca via trust-manager).
   - target:

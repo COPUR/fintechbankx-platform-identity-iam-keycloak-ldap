@@ -27,6 +27,15 @@ patches:
       - op: replace
         path: /data/FBX_WEB_POST_LOGOUT_REDIRECT_URI
         value: https://app.staging.fintechbankx.example/
+      - op: replace
+        path: /data/FBX_STAFF_WEB_REDIRECT_URI
+        value: https://staff.staging.fintechbankx.example/auth/callback
+      - op: replace
+        path: /data/FBX_STAFF_WEB_ORIGIN
+        value: https://staff.staging.fintechbankx.example
+      - op: replace
+        path: /data/FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI
+        value: https://staff.staging.fintechbankx.example/
   - target:
       kind: Keycloak
       name: keycloak

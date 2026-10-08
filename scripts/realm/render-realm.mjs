@@ -176,35 +176,51 @@ const serviceClients = manifest.clients.map((c) => ({
   optionalClientScopes: []
 }));
 
-const publicClient = (clientId, name, redirectEnv, originEnv, logoutEnv) => ({
-  clientId,
-  name,
-  description: `First-party public client (authorization code + PKCE S256, no client credential). ${name}.`,
-  enabled: true,
-  protocol: "openid-connect",
-  publicClient: true,
-  standardFlowEnabled: true,
-  implicitFlowEnabled: false,
-  directAccessGrantsEnabled: false,
-  serviceAccountsEnabled: false,
-  frontchannelLogout: true,
-  // Only end-user realm roles reach the token (scopeMappings below); no
-  // account-console or realm-management roles, so aud stays the service list.
-  fullScopeAllowed: false,
-  redirectUris: [env(redirectEnv)],
-  webOrigins: originEnv ? [env(originEnv)] : [],
-  attributes: Object.assign({
-    "fbx.client-type": "first-party-public",
-    "pkce.code.challenge.method": "S256",
-    "require.pushed.authorization.requests": "false",
-    "use.refresh.tokens": "true",
-    "oauth2.device.authorization.grant.enabled": "false",
-    "oidc.ciba.grant.enabled": "false"
-  }, logoutEnv ? { "post.logout.redirect.uris": env(logoutEnv) } : {}),
-  protocolMappers: audienceMappers(channel[clientId].audiences),
-  defaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email", CUSTOMER_ID_SCOPE],
-  optionalClientScopes: ["offline_access"]
-});
+// First-party public clients. Each serves one user type (registry userType):
+// customer clients map only the customer role and add the customer-id scope;
+// the staff client maps only the staff roles, has short sessions and no
+// optional scopes. Offline tokens only where the registry says offlineAccess
+// (mobile), with client offline-session limits.
+const STAFF_ROLES = ["banker", "loan_officer", "admin", "auditor", "compliance_officer"];
+const rolesOfUserType = (t) => (t === "staff" ? STAFF_ROLES : ["customer"]);
+const publicClient = (clientId, name, redirectEnv, originEnv, logoutEnv) => {
+  const entry = channel[clientId];
+  const staff = entry.userType === "staff";
+  return {
+    clientId,
+    name,
+    description: `First-party public client (authorization code + PKCE S256, no client credential). ${name}; ${staff ? "staff" : "customer"} roles only.`,
+    enabled: true,
+    protocol: "openid-connect",
+    publicClient: true,
+    standardFlowEnabled: true,
+    implicitFlowEnabled: false,
+    directAccessGrantsEnabled: false,
+    serviceAccountsEnabled: false,
+    frontchannelLogout: true,
+    // Only this client's user-type roles reach the token (scopeMappings
+    // below); no account-console or realm-management roles, so aud stays the
+    // service list.
+    fullScopeAllowed: false,
+    redirectUris: [env(redirectEnv)],
+    webOrigins: originEnv ? [env(originEnv)] : [],
+    attributes: Object.assign({
+      "fbx.client-type": "first-party-public",
+      "fbx.user-type": entry.userType,
+      "pkce.code.challenge.method": "S256",
+      "require.pushed.authorization.requests": "false",
+      "use.refresh.tokens": "true",
+      "oauth2.device.authorization.grant.enabled": "false",
+      "oidc.ciba.grant.enabled": "false"
+    },
+    logoutEnv ? { "post.logout.redirect.uris": env(logoutEnv) } : {},
+    staff ? { "client.session.idle.timeout": "900", "client.session.max.lifespan": "28800" } : {},
+    entry.offlineAccess ? { "client.offline.session.idle.timeout": "1209600", "client.offline.session.max.lifespan": "2592000" } : {}),
+    protocolMappers: audienceMappers(entry.audiences),
+    defaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email", ...(staff ? [] : [CUSTOMER_ID_SCOPE])],
+    optionalClientScopes: entry.offlineAccess ? ["offline_access"] : []
+  };
+};
 
 const tppTemplate = {
   clientId: "of-tpp-conformance-template",
@@ -293,9 +309,10 @@ const realm = {
   ssoSessionMaxLifespanRememberMe: 0,
   clientSessionIdleTimeout: 0,
   clientSessionMaxLifespan: 0,
-  offlineSessionIdleTimeout: 2592000,
+  // Offline tokens (mobile only): 14 days idle, 30 days max.
+  offlineSessionIdleTimeout: 1209600,
   offlineSessionMaxLifespanEnabled: true,
-  offlineSessionMaxLifespan: 5184000,
+  offlineSessionMaxLifespan: 2592000,
   accessCodeLifespan: 60,
   accessCodeLifespanUserAction: 300,
   accessCodeLifespanLogin: 1800,
@@ -358,7 +375,8 @@ const realm = {
 
   clients: [
     ...serviceClients,
-    publicClient("fintechbankx-web", "FinTechBankX web portal", "FBX_WEB_REDIRECT_URI", "FBX_WEB_ORIGIN", "FBX_WEB_POST_LOGOUT_REDIRECT_URI"),
+    publicClient("fintechbankx-web", "FinTechBankX web portal (customers)", "FBX_WEB_REDIRECT_URI", "FBX_WEB_ORIGIN", "FBX_WEB_POST_LOGOUT_REDIRECT_URI"),
+    publicClient("fintechbankx-staff-web", "FinTechBankX staff web portal", "FBX_STAFF_WEB_REDIRECT_URI", "FBX_STAFF_WEB_ORIGIN", "FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI"),
     publicClient("fintechbankx-mobile", "FinTechBankX mobile app", "FBX_MOBILE_REDIRECT_URI", null, null),
     tppTemplate,
     ...ssoClients
@@ -367,9 +385,9 @@ const realm = {
   scopeMappings: [
     ...(manifest.ssoClients || []).map((c) => ({ client: c.clientId, roles: c.roles })),
     ...serviceClients.map((c) => ({ client: c.clientId, roles: ["service"] })),
-    ...["fintechbankx-web", "fintechbankx-mobile"].map((client) => ({
+    ...["fintechbankx-web", "fintechbankx-staff-web", "fintechbankx-mobile"].map((client) => ({
       client,
-      roles: roles.map(([name]) => name).filter((name) => name !== "service")
+      roles: rolesOfUserType(channel[client].userType)
     }))
   ],
 

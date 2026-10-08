@@ -6,7 +6,7 @@ The deployable identity platform of FinTechBankX: Keycloak realm `fintechbankx` 
 
 | Area | Path | Doc |
 |---|---|---|
-| Realm as code (roles, groups, 15 service clients with audience mappers, web/mobile PKCE clients, FAPI 2.0 TPP policies, LDAP federation, token lifetimes, brute force, events) | `realm/` | [REALM_AS_CODE](docs/identity/REALM_AS_CODE.md) |
+| Realm as code (roles, groups, 15 service clients with audience mappers, customer web and mobile, staff web PKCE clients (one user type each), FAPI 2.0 TPP policies, LDAP federation, token lifetimes, brute force, events) | `realm/` | [REALM_AS_CODE](docs/identity/REALM_AS_CODE.md) |
 | Keycloak 26.7.5 on EKS via the Keycloak Operator, kustomize base + dev/staging/prod overlays, realm import Job | `deploy/kustomize/` | [KEYCLOAK_ON_EKS](docs/identity/KEYCLOAK_ON_EKS.md) |
 | Aurora PostgreSQL (terraform-modules `aurora-postgresql`), Secrets Manager containers, KMS | `deploy/terraform/` | [KEYCLOAK_ON_EKS](docs/identity/KEYCLOAK_ON_EKS.md) |
 | OpenLDAP for dev/staging, corporate directory (AWS Managed Microsoft AD) for prod | `deploy/kustomize/components/openldap/` | [DIRECTORY_FEDERATION](docs/identity/DIRECTORY_FEDERATION.md) |
