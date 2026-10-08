@@ -368,3 +368,34 @@ test("TPP tokens carry fbx_client_type equal to the client attribute fbx.client-
   scope(drift, "fbx-client-type-open-finance-tpp").protocolMappers[0].config["claim.value"] = "service";
   assert.ok(checkRealm(drift).some((e) => e.startsWith("of-tpp-conformance-template: scope fbx-client-type-open-finance-tpp emits fbx_client_type=service")));
 });
+
+// Review re-check: the claim is mandatory on every TPP client, so the service
+// can fail closed when fbx_client_type is absent.
+const emitsClientType = (input, c) => {
+  const scopes = new Map((input.realm.clientScopes || []).map((s) => [s.name, s]));
+  const viaScopes = (c.defaultClientScopes || []).flatMap((n) => scopes.get(n)?.protocolMappers || []);
+  return [...viaScopes, ...(c.protocolMappers || [])].some(
+    (m) => m.config?.["claim.name"] === "fbx_client_type" && m.config?.["claim.value"] === c.attributes?.["fbx.client-type"] && m.config?.["access.token.claim"] === "true"
+  );
+};
+
+test("every client tagged fbx.client-type=open-finance-tpp emits fbx_client_type by default", () => {
+  const input = fresh();
+  const tpps = input.realm.clients.filter((c) => c.attributes?.["fbx.client-type"] === "open-finance-tpp");
+  assert.ok(tpps.length >= 1, "the TPP template must exist");
+  for (const c of tpps) assert.ok(emitsClientType(input, c), `${c.clientId} must emit fbx_client_type`);
+  // Any further TPP client (e.g. one added to the realm by hand) without the scope fails the gate.
+  const extra = fresh();
+  const copy = structuredClone(client(extra, "of-tpp-conformance-template"));
+  copy.clientId = "of-tpp-extra";
+  copy.defaultClientScopes = copy.defaultClientScopes.filter((s) => s !== "fbx-client-type-open-finance-tpp");
+  extra.realm.clients.push(copy);
+  extra.registry.channelClients.push({ ...extra.registry.channelClients.find((c) => c.clientId === "of-tpp-conformance-template"), clientId: "of-tpp-extra" });
+  assert.ok(checkRealm(extra).some((e) => e === "of-tpp-extra: TPP clients must carry a default scope emitting fbx_client_type=open-finance-tpp"));
+  // As an optional scope it would only appear when requested: not enough.
+  const optional = fresh();
+  const t = client(optional, "of-tpp-conformance-template");
+  t.defaultClientScopes = t.defaultClientScopes.filter((s) => s !== "fbx-client-type-open-finance-tpp");
+  t.optionalClientScopes.push("fbx-client-type-open-finance-tpp");
+  assert.ok(checkRealm(optional).some((e) => e === "of-tpp-conformance-template: TPP clients must carry a default scope emitting fbx_client_type=open-finance-tpp"));
+});
