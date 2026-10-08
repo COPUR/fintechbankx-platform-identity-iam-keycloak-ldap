@@ -87,6 +87,44 @@
           }
         }
       ]
+    },
+    {
+      "name": "payments",
+      "description": "Open-finance payment APIs (request to pay, VRP, file payments). Requested by TPP clients; grants a scope value only.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Initiate and manage payments on your behalf"
+      },
+      "protocolMappers": []
+    },
+    {
+      "name": "fbx-client-type-open-finance-tpp",
+      "description": "Adds fbx_client_type=open-finance-tpp (the client attribute fbx.client-type of TPP clients) to access tokens.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "fbx_client_type",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "fbx_client_type",
+            "claim.value": "open-finance-tpp",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "defaultDefaultClientScopes": [
@@ -1553,9 +1591,12 @@
         "basic",
         "acr",
         "roles",
-        "customer-id"
+        "customer-id",
+        "fbx-client-type-open-finance-tpp"
       ],
-      "optionalClientScopes": []
+      "optionalClientScopes": [
+        "payments"
+      ]
     },
     {
       "clientId": "svc-obs-grafana",

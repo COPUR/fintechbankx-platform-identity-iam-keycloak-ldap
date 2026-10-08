@@ -308,3 +308,63 @@ test("the TPP DPoP policy matches every open-finance TPP client, not only those 
     }
   }
 });
+
+// Request-to-pay PR #14 (runbook section 2, ADR-030 open question 2): TPP
+// calls need scope payments in the token; the client type may travel as claim
+// fbx_client_type so the service can require open-finance-tpp.
+const scope = (input, name) => (input.realm.clientScopes || []).find((s) => s.name === name);
+
+test("realm defines client scope payments, named in the token scope claim", () => {
+  const s = scope(fresh(), "payments");
+  assert.ok(s, "client scope payments missing");
+  assert.equal(s.protocol, "openid-connect");
+  assert.equal(s.attributes["include.in.token.scope"], "true");
+  assert.deepEqual(s.protocolMappers || [], [], "payments grants a scope value only, no claims");
+});
+
+test("TPP clients carry payments as an optional scope; it is never a realm default", () => {
+  const input = fresh();
+  const tpp = client(input, "of-tpp-conformance-template");
+  assert.ok(tpp.optionalClientScopes.includes("payments"));
+  assert.ok(!tpp.defaultClientScopes.includes("payments"), "payments is requested by the TPP, not granted by default");
+  assert.ok(!(input.realm.defaultDefaultClientScopes || []).includes("payments"));
+  assert.ok(!(input.realm.defaultOptionalClientScopes || []).includes("payments"));
+  for (const c of input.realm.clients) {
+    if (c.attributes?.["fbx.client-type"] === "open-finance-tpp") continue;
+    assert.ok(![...(c.defaultClientScopes || []), ...(c.optionalClientScopes || [])].includes("payments"), `${c.clientId} must not carry payments`);
+  }
+  const missing = fresh();
+  client(missing, "of-tpp-conformance-template").optionalClientScopes = [];
+  assert.ok(checkRealm(missing).some((e) => e === "of-tpp-conformance-template: TPP clients must carry the payments scope (optional)"));
+  const onWeb = fresh();
+  client(onWeb, "fintechbankx-web").optionalClientScopes.push("payments");
+  assert.ok(checkRealm(onWeb).some((e) => e === "fintechbankx-web: scope payments is for open-finance TPP clients only"));
+});
+
+test("TPP tokens carry fbx_client_type equal to the client attribute fbx.client-type", () => {
+  const input = fresh();
+  const s = scope(input, "fbx-client-type-open-finance-tpp");
+  assert.ok(s, "client scope fbx-client-type-open-finance-tpp missing");
+  assert.equal(s.attributes["include.in.token.scope"], "false");
+  const [m] = s.protocolMappers;
+  assert.equal(s.protocolMappers.length, 1);
+  assert.equal(m.protocolMapper, "oidc-hardcoded-claim-mapper");
+  assert.equal(m.config["claim.name"], "fbx_client_type");
+  assert.equal(m.config["claim.value"], "open-finance-tpp");
+  assert.equal(m.config["access.token.claim"], "true");
+  assert.equal(m.config["introspection.token.claim"], "true");
+  assert.equal(m.config["id.token.claim"], "false");
+  const tpp = client(input, "of-tpp-conformance-template");
+  assert.ok(tpp.defaultClientScopes.includes("fbx-client-type-open-finance-tpp"));
+  assert.equal(tpp.attributes["fbx.client-type"], m.config["claim.value"]);
+  // A client of another type must never carry it (it would claim to be a TPP).
+  const wrong = fresh();
+  client(wrong, "svc-pay-request-to-pay").defaultClientScopes.push("fbx-client-type-open-finance-tpp");
+  assert.ok(checkRealm(wrong).some((e) => e === "svc-pay-request-to-pay: scope fbx-client-type-open-finance-tpp emits fbx_client_type=open-finance-tpp but the client is fbx.client-type=service"));
+  const realmDefault = fresh();
+  realmDefault.realm.defaultDefaultClientScopes.push("fbx-client-type-open-finance-tpp");
+  assert.ok(checkRealm(realmDefault).some((e) => e === "client scope fbx-client-type-open-finance-tpp must not be a realm default scope"));
+  const drift = fresh();
+  scope(drift, "fbx-client-type-open-finance-tpp").protocolMappers[0].config["claim.value"] = "service";
+  assert.ok(checkRealm(drift).some((e) => e.startsWith("of-tpp-conformance-template: scope fbx-client-type-open-finance-tpp emits fbx_client_type=service")));
+});

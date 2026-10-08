@@ -20,6 +20,9 @@ export const STAFF_ROLE_GROUPS = {
   "fbx-compliance-officer": "compliance_officer"
 };
 const CUSTOMER_ID_SCOPE = "customer-id";
+export const PAYMENTS_SCOPE = "payments";
+export const TPP_CLIENT_TYPE = "open-finance-tpp";
+export const CLIENT_TYPE_CLAIM = "fbx_client_type";
 const PLACEHOLDER = /^\$\(env:[A-Z0-9_]+\)$/;
 const SECRET_KEY = /(secret|credential|password|passwd|private.?key)/i;
 
@@ -240,6 +243,40 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
       if (p.policy?.type !== "client" || p.policy?.logic !== "POSITIVE") e("policy must be a POSITIVE client policy");
       if (!(p.policy?.clients || []).length) e("policy must name at least one client");
       for (const id of p.policy?.clients || []) if (!serviceIds.has(id)) e(`policy client ${id} is not a service client`);
+    }
+  }
+
+  // Scopes that only open-finance TPP clients may carry (request-to-pay
+  // PR #14): payments (optional, requested by the TPP) and the client-type
+  // scope, whose hardcoded fbx_client_type must equal the client's
+  // fbx.client-type attribute. Neither may be a realm default: a client
+  // created without explicit scopes would get it.
+  const scopesByName = new Map((realm.clientScopes || []).map((s) => [s.name, s]));
+  const realmDefaults = [...(realm.defaultDefaultClientScopes || []), ...(realm.defaultOptionalClientScopes || [])];
+  const payments = scopesByName.get(PAYMENTS_SCOPE);
+  if (!payments) err(`client scope ${PAYMENTS_SCOPE} missing`);
+  else if (payments.attributes?.["include.in.token.scope"] !== "true") err(`client scope ${PAYMENTS_SCOPE} must set include.in.token.scope=true (services read it from the scope claim)`);
+  const typeScopes = [...scopesByName.values()].flatMap((s) =>
+    (s.protocolMappers || [])
+      .filter((m) => m.config?.["claim.name"] === CLIENT_TYPE_CLAIM)
+      .map((m) => ({ scope: s.name, value: m.config?.["claim.value"], mapper: m })));
+  for (const t of typeScopes) {
+    if (t.mapper.protocolMapper !== "oidc-hardcoded-claim-mapper") err(`client scope ${t.scope}: ${CLIENT_TYPE_CLAIM} must come from a hardcoded-claim mapper`);
+    if (t.mapper.config?.["access.token.claim"] !== "true") err(`client scope ${t.scope}: ${CLIENT_TYPE_CLAIM} must be in the access token`);
+  }
+  for (const name of [PAYMENTS_SCOPE, ...typeScopes.map((t) => t.scope)]) {
+    if (realmDefaults.includes(name)) err(`client scope ${name} must not be a realm default scope`);
+  }
+  for (const c of clients.values()) {
+    const scopes = [...(c.defaultClientScopes || []), ...(c.optionalClientScopes || [])];
+    const type = c.attributes?.["fbx.client-type"];
+    if (scopes.includes(PAYMENTS_SCOPE) && type !== TPP_CLIENT_TYPE) err(`${c.clientId}: scope ${PAYMENTS_SCOPE} is for open-finance TPP clients only`);
+    for (const t of typeScopes) {
+      if (scopes.includes(t.scope) && t.value !== type) err(`${c.clientId}: scope ${t.scope} emits ${CLIENT_TYPE_CLAIM}=${t.value} but the client is fbx.client-type=${type}`);
+    }
+    if (type === TPP_CLIENT_TYPE) {
+      if (!(c.optionalClientScopes || []).includes(PAYMENTS_SCOPE)) err(`${c.clientId}: TPP clients must carry the ${PAYMENTS_SCOPE} scope (optional)`);
+      if (!typeScopes.some((t) => t.value === type && (c.defaultClientScopes || []).includes(t.scope))) err(`${c.clientId}: TPP clients must carry a default scope emitting ${CLIENT_TYPE_CLAIM}=${type}`);
     }
   }
 

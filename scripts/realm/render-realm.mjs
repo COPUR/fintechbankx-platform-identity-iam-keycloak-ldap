@@ -74,6 +74,51 @@ const customerIdScope = {
     }
   }]
 };
+// Request-to-pay PR #14 (runbook section 2, ADR-030 open question 2): the
+// TPP payment paths require scope payments. Optional on TPP clients (the TPP
+// asks for it at PAR / token time), never a realm default, so channel and
+// service clients and clients created without explicit scopes do not get it.
+// Onboarding assigns it only to TPPs authorised for payment services.
+const PAYMENTS_SCOPE = "payments";
+const paymentsScope = {
+  name: PAYMENTS_SCOPE,
+  description: "Open-finance payment APIs (request to pay, VRP, file payments). Requested by TPP clients; grants a scope value only.",
+  protocol: "openid-connect",
+  attributes: {
+    "include.in.token.scope": "true",
+    "display.on.consent.screen": "true",
+    "consent.screen.text": "Initiate and manage payments on your behalf"
+  },
+  protocolMappers: []
+};
+// Client type as an access-token claim. Keycloak 26 has no built-in mapper
+// that reads a client attribute, so the claim is hardcoded in a scope that
+// only clients with fbx.client-type=open-finance-tpp may carry
+// (scripts/ci/check-realm.mjs keeps the value and the attribute equal).
+const TPP_CLIENT_TYPE = "open-finance-tpp";
+const CLIENT_TYPE_SCOPE = `fbx-client-type-${TPP_CLIENT_TYPE}`;
+const clientTypeScope = {
+  name: CLIENT_TYPE_SCOPE,
+  description: "Adds fbx_client_type=open-finance-tpp (the client attribute fbx.client-type of TPP clients) to access tokens.",
+  protocol: "openid-connect",
+  attributes: { "include.in.token.scope": "false", "display.on.consent.screen": "false" },
+  protocolMappers: [{
+    name: "fbx_client_type",
+    protocol: "openid-connect",
+    protocolMapper: "oidc-hardcoded-claim-mapper",
+    consentRequired: false,
+    config: {
+      "claim.name": "fbx_client_type",
+      "claim.value": TPP_CLIENT_TYPE,
+      "jsonType.label": "String",
+      "access.token.claim": "true",
+      "id.token.claim": "false",
+      "userinfo.token.claim": "false",
+      "introspection.token.claim": "true",
+      "lightweight.claim": "false"
+    }
+  }]
+};
 const ALL_USERS = { view: ["admin", "user"], edit: ["admin", "user"] };
 // Full user-profile configuration (Keycloak 26 defaults plus customer_id);
 // keycloak-config-cli replaces the realm's profile with it.
@@ -240,7 +285,7 @@ const tppTemplate = {
   redirectUris: ["https://tpp.example/callback"],
   webOrigins: [],
   attributes: {
-    "fbx.client-type": "open-finance-tpp",
+    "fbx.client-type": TPP_CLIENT_TYPE,
     "fbx.tpp.token-binding": "dpop",
     "require.pushed.authorization.requests": "true",
     "dpop.bound.access.tokens": "true",
@@ -258,8 +303,8 @@ const tppTemplate = {
     "oidc.ciba.grant.enabled": "false"
   },
   protocolMappers: audienceMappers(channel["of-tpp-conformance-template"].audiences),
-  defaultClientScopes: ["basic", "acr", "roles", CUSTOMER_ID_SCOPE],
-  optionalClientScopes: []
+  defaultClientScopes: ["basic", "acr", "roles", CUSTOMER_ID_SCOPE, CLIENT_TYPE_SCOPE],
+  optionalClientScopes: [PAYMENTS_SCOPE]
 };
 
 const attrMapper = (name, ldapAttr, modelAttr, mandatory) => ({
@@ -346,7 +391,7 @@ const realm = {
   adminEventsEnabled: true,
   adminEventsDetailsEnabled: true,
 
-  clientScopes: [customerIdScope],
+  clientScopes: [customerIdScope, paymentsScope, clientTypeScope],
   defaultDefaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email", CUSTOMER_ID_SCOPE],
   userProfile,
 
