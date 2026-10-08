@@ -3,6 +3,13 @@
 # removals in Git are applied too). Chosen over KeycloakRealmImport, which
 # only creates a realm that does not exist yet and never updates it.
 #
+# Two steps, in order: initContainer keycloak-config-cli imports the realm,
+# then container admin-permissions (Node, scripts/realm/apply-admin-permissions.mjs)
+# creates or updates the fine-grained admin permissions of
+# realm/admin-permissions.json, which keycloak-config-cli 6.5.1 cannot import
+# (it skips the system-managed admin-permissions client). Both use the same
+# bootstrap admin client; the second step receives only that credential.
+#
 # Re-run on every change: Argo CD runs it as a PostSync hook; with plain
 # kubectl delete the old Job first. Image pinned by digest (6.5.1 built for
 # Keycloak 26.5.5; verified locally against Keycloak 26.7.5, see
@@ -38,7 +45,7 @@ spec:
         runAsGroup: 65534
         seccompProfile:
           type: RuntimeDefault
-      containers:
+      initContainers:
         - name: keycloak-config-cli
           image: docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5@sha256:0955d98c8a341898b7aa177477edf8a1e90569ae50bbe7598141c1270b773274
           imagePullPolicy: IfNotPresent
@@ -67,7 +74,57 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+      containers:
+        - name: admin-permissions
+          image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
+          imagePullPolicy: IfNotPresent
+          command: ["node", "/opt/fbx/script/apply-admin-permissions.mjs", "--spec", "/opt/fbx/spec/admin-permissions.json"]
+          env:
+            - name: KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: keycloak-realm-import-env
+                  key: KEYCLOAK_URL
+            - name: KEYCLOAK_GRANTTYPE
+              valueFrom:
+                configMapKeyRef:
+                  name: keycloak-realm-import-env
+                  key: KEYCLOAK_GRANTTYPE
+            - name: KEYCLOAK_CLIENTID
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-realm-import
+                  key: KEYCLOAK_CLIENTID
+            - name: KEYCLOAK_CLIENTSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-realm-import
+                  key: KEYCLOAK_CLIENTSECRET
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: admin-permissions-script
+              mountPath: /opt/fbx/script
+              readOnly: true
+            - name: admin-permissions-spec
+              mountPath: /opt/fbx/spec
+              readOnly: true
       volumes:
+        - name: admin-permissions-script
+          configMap:
+            name: fintechbankx-realm-admin-permissions-script
+        - name: admin-permissions-spec
+          configMap:
+            name: fintechbankx-realm-admin-permissions
         - name: realm
           configMap:
             name: fintechbankx-realm

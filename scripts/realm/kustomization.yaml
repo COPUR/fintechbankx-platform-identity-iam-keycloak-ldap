@@ -1,0 +1,14 @@
+# Packs apply-admin-permissions.mjs into a ConfigMap for the second step of
+# the realm import Job (deploy/kustomize/base/realm-import/job.yaml). Kept
+# next to the script because kustomize only loads files under its own root.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+configMapGenerator:
+  - name: fintechbankx-realm-admin-permissions-script
+    files:
+      - apply-admin-permissions.mjs
+    options:
+      labels:
+        app.kubernetes.io/name: keycloak-realm-import
+        app.kubernetes.io/part-of: fintechbankx-identity

@@ -142,7 +142,6 @@ const ssoClients = (manifest.ssoClients || []).map((c) => ({
   optionalClientScopes: []
 }));
 
-const adminRolesOf = (id) => manifest.clients.find((x) => x.clientId === id)?.adminRoles || [];
 const serviceClients = manifest.clients.map((c) => ({
   clientId: c.clientId,
   name: c.displayName,
@@ -277,6 +276,11 @@ const realm = {
   editUsernameAllowed: false,
   userManagedAccessAllowed: false,
   organizationsEnabled: false,
+  // Fine-grained admin permissions v2 (Keycloak 26.2+): Keycloak creates the
+  // system client admin-permissions; scripts/realm/apply-admin-permissions.mjs
+  // adds the permissions of realm/admin-permissions.json. No defaultGroups:
+  // a default group would also be joined by every new service account.
+  adminPermissionsEnabled: true,
 
   defaultSignatureAlgorithm: "RS256",
   revokeRefreshToken: true,
@@ -374,19 +378,11 @@ const realm = {
     enabled: true,
     serviceAccountClientId: c.clientId,
     realmRoles: ["service"],
-    // Only the realm-management roles the registry grants (adminRoles), e.g.
-    // manage-users for the customer service's identity-link step.
-    ...(adminRolesOf(c.clientId).length ? { clientRoles: { "realm-management": adminRolesOf(c.clientId) } } : {}),
+    // No realm-management roles on any service account (check-realm). User
+    // administration is granted per group through fine-grained admin
+    // permissions v2 (realm/admin-permissions.json).
     groups: []
   })),
-
-  // fullScopeAllowed is false on service clients, so a granted
-  // realm-management role reaches the token only through this mapping.
-  clientScopeMappings: Object.fromEntries(
-    manifest.clients.some((c) => c.adminRoles?.length)
-      ? [["realm-management", manifest.clients.filter((c) => c.adminRoles?.length).map((c) => ({ client: c.clientId, roles: c.adminRoles }))]]
-      : []
-  ),
 
   components: {
     "org.keycloak.storage.UserStorageProvider": [

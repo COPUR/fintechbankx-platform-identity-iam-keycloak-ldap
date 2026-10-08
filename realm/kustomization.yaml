@@ -12,3 +12,12 @@ configMapGenerator:
       labels:
         app.kubernetes.io/name: keycloak-realm-import
         app.kubernetes.io/part-of: fintechbankx-identity
+  # Fine-grained admin permissions, applied by the Job's second step
+  # (separate ConfigMap: keycloak-config-cli imports every *.json in /config).
+  - name: fintechbankx-realm-admin-permissions
+    files:
+      - admin-permissions.json
+    options:
+      labels:
+        app.kubernetes.io/name: keycloak-realm-import
+        app.kubernetes.io/part-of: fintechbankx-identity

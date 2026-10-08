@@ -9,7 +9,9 @@ Status: **Proposed**. Owner: Identity Platform Squad (svc-idn-keycloak-ldap).
 | `realm/service-clients.json` | Client registry: every service client (client id = service id), its service slug, namespace, service account and the audiences it may request; plus the channel clients (web, mobile, TPP template). Edit this first. |
 | `scripts/realm/render-realm.mjs` | Renders the realm from the registry and the realm settings in the script. |
 | `realm/fintechbankx-realm.json` | Rendered realm representation (Keycloak JSON), applied by keycloak-config-cli. Never edit by hand; CI fails on drift. |
-| `scripts/ci/check-realm.mjs` | Contract gate: roles, clients, audiences, FAPI policies, LDAP federation, no credential values, every placeholder supplied by the import Job. |
+| `realm/admin-permissions.json` | Fine-grained admin permissions (Keycloak 26 FGAP v2): which service client may administer the members of which group, with which scopes and why. |
+| `scripts/realm/apply-admin-permissions.mjs` | Applies `realm/admin-permissions.json` through the admin REST API (second step of the import Job; keycloak-config-cli cannot import FGAP v2 permissions). Idempotent: looks up by name and path, creates or updates, never deletes. |
+| `scripts/ci/check-realm.mjs` | Contract gate: roles, clients, audiences, FAPI policies, LDAP federation, no credential values, every placeholder supplied by the import Job, no realm-management role on a service client, admin permissions limited to non-staff groups. |
 
 Change flow: edit the registry or the render script, run `node scripts/realm/render-realm.mjs`, run `node scripts/ci/check-realm.mjs` and `npm test`, open a PR. The realm import Job applies the merged file.
 
@@ -62,9 +64,32 @@ Change flow: edit the registry or the render script, run `node scripts/realm/ren
 
 Deviation from `keycloak-aaa-blueprint.md` (enterprise-architecture repo): the blueprint proposes three realms (`open-finance-prod`, `-internal`, `-sandbox`); the platform contract fixes one realm `fintechbankx` per environment. Sandbox isolation therefore comes from the environment (dev/staging), not from a realm.
 
+## Customer user administration (fine-grained admin permissions)
+
+The customer service (`svc-cus-profile-kyc`) links an identity user to a customer profile: `PUT /api/v1/customers/{id}/identity-link` (staff step) reads the user and sets the attribute `customer_id` with `GET` and `PUT /admin/realms/fintechbankx/users/{id}`. It does **not** hold `realm-management` `manage-users` (that would let it edit every user, staff included, and grant itself realm roles). Instead (security review 2026-10-08, option A):
+
+- The realm sets `adminPermissionsEnabled: true` (FGAP v2) and has no `defaultGroups` (a default group would also be joined by every new service account).
+- `realm/admin-permissions.json` defines client policy `fbx-customer-service-client` (the client `svc-cus-profile-kyc`, positive) and scope permission `fbx-customers-customer-service` (resource type Groups, resource `/customers`, scopes `view-members` and `manage-members`, decision strategy UNANIMOUS).
+- `check-realm.mjs` rejects any `realm-management` role on a service client (service account, scope mapping or registry `adminRoles`) and any admin permission that is not group-scoped, targets `/staff`, uses another scope, or names a client that is not a registered service client.
+
+**Customer users must be created in group `/customers`** (customer onboarding or whoever creates the Keycloak user). A user outside `/customers` is invisible to the customer service: `GET` and `PUT` answer 403.
+
+Verified locally against Keycloak 26.7.5 (realm imported with the pinned keycloak-config-cli 6.5.1 jar, then the script; token of `svc-cus-profile-kyc` by client credentials):
+
+| Call by the customer service | Customer user (in `/customers`) | Staff user |
+|---|---|---|
+| `GET /users/{id}`, `PUT /users/{id}` (set `customer_id`) | 200, 204 | 403, 403 |
+| add realm role, move into `/staff`, remove from `/customers` | 403 | - |
+| search, count, create users; list clients, roles, groups; impersonate | 403 | - |
+| reset password, read credentials, log out, change email, disable, delete | **allowed** | 403 |
+
+**Residual risk:** `manage-members` is all or nothing for a member, so the customer service can still reset passwords, send required actions, log out, change the email of, disable and delete *customer* users. It cannot touch staff, roles, groups or clients. Admin events (enabled, with representation) record every such call. Recommended follow-up (user decision, not done): move this permission to an identity-owned identity-link service that only sets `customer_id`, and let the customer service call that service instead of the admin API.
+
+The script and config-cli are independent: a re-run of the import keeps the permissions (checked locally), and a permission removed from `admin-permissions.json` is **not** deleted from Keycloak (the script never deletes; remove it in the admin console under Permissions).
+
 ## Applying the realm
 
-`deploy/kustomize/base/realm-import/job.yaml` runs keycloak-config-cli 6.5.1 (image pinned by digest) with `IMPORT_VARSUBSTITUTION_ENABLED=true`. Non-secret inputs come from ConfigMap `keycloak-realm-import-env` (overlay-specific), secret inputs from ExternalSecret `keycloak-realm-import` (admin client, LDAP bind, 15 client credentials). keycloak-config-cli keeps remote state, so a client removed from Git is removed from Keycloak, while clients created outside Git (for example TPPs registered dynamically) are left alone.
+`deploy/kustomize/base/realm-import/job.yaml` runs keycloak-config-cli 6.5.1 (image pinned by digest) as an initContainer with `IMPORT_VARSUBSTITUTION_ENABLED=true`, then `apply-admin-permissions.mjs` in `node:22.22.0-alpine3.22` (pinned by digest), which receives only the bootstrap admin client credential. Non-secret inputs come from ConfigMap `keycloak-realm-import-env` (overlay-specific), secret inputs from ExternalSecret `keycloak-realm-import` (admin client, LDAP bind, 15 client credentials). keycloak-config-cli keeps remote state, so a client removed from Git is removed from Keycloak, while clients created outside Git (for example TPPs registered dynamically) are left alone.
 
 KeycloakRealmImport (operator CR) is not used: it only creates a missing realm and never updates an existing one.
 

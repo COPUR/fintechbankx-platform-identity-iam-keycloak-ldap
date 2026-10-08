@@ -42,7 +42,9 @@ function walk(value, visit, trail = []) {
   }
 }
 
-export function checkRealm({ realm, registry, importEnv = null, importSecretKeys = null, importSecretRefs = null }) {
+export const ADMIN_PERMISSION_SCOPES = ["view-members", "manage-members"];
+
+export function checkRealm({ realm, registry, adminPermissions = null, importEnv = null, importSecretKeys = null, importSecretRefs = null }) {
   const errors = [];
   const err = (m) => errors.push(m);
 
@@ -63,6 +65,10 @@ export function checkRealm({ realm, registry, importEnv = null, importSecretKeys
   if (realm.adminEventsEnabled !== true) err("adminEventsEnabled must be true");
   if (!(realm.accessTokenLifespan > 0 && realm.accessTokenLifespan <= 900)) err("accessTokenLifespan must be 1..900 seconds");
   if (realm.sslRequired === "none") err("sslRequired must not be none");
+  // Fine-grained admin permissions v2; a default group would also be joined
+  // by every new service account, so none.
+  if (realm.adminPermissionsEnabled !== true) err("adminPermissionsEnabled must be true (fine-grained admin permissions v2)");
+  if ((realm.defaultGroups || []).length) err("defaultGroups must be empty (service accounts would join them)");
 
   // No credential values anywhere: secret-like keys hold placeholders only.
   walk(realm, (key, value, trail) => {
@@ -100,23 +106,13 @@ export function checkRealm({ realm, registry, importEnv = null, importSecretKeys
       const sm = (realm.scopeMappings || []).find((s) => s.client === c.clientId);
       if (!sm || !(sm.roles || []).includes("service")) err(`${c.clientId}: scope mapping for role service missing`);
     }
-    // realm-management roles: only user-administration roles, each grant
-    // documented in the registry and carried both on the service account
-    // and in the client scope mapping (fullScopeAllowed is false).
-    const ADMIN_ROLES_ALLOWED = ["query-users", "view-users", "manage-users"];
-    const adminRoles = entry.adminRoles || [];
-    for (const r of adminRoles) {
-      if (!ADMIN_ROLES_ALLOWED.includes(r)) err(`${c.clientId}: realm-management role ${r} is not allowed (only ${ADMIN_ROLES_ALLOWED.join(", ")})`);
-    }
-    if (adminRoles.length && !entry.adminRolesReason) err(`${c.clientId}: adminRoles need adminRolesReason in the registry`);
-    const granted = [...(sa?.clientRoles?.["realm-management"] || [])].sort();
-    if (JSON.stringify(granted) !== JSON.stringify([...adminRoles].sort())) {
-      err(`${c.clientId}: service account realm-management roles ${granted.join(",") || "<none>"} != registry ${adminRoles.join(",") || "<none>"}`);
-    }
-    const mapped = (realm.clientScopeMappings?.["realm-management"] || []).find((m) => m.client === c.clientId);
-    if (JSON.stringify([...(mapped?.roles || [])].sort()) !== JSON.stringify([...adminRoles].sort())) {
-      err(`${c.clientId}: realm-management scope mapping does not match registry adminRoles`);
-    }
+    // No realm-management role on any service client (ADMIN_ROLES_ALLOWED is
+    // empty): user administration is granted per group through fine-grained
+    // admin permissions v2 (realm/admin-permissions.json), never realm-wide.
+    const ADMIN_ROLES_ALLOWED = [];
+    if ((entry.adminRoles || []).some((r) => !ADMIN_ROLES_ALLOWED.includes(r))) err(`${c.clientId}: registry adminRoles are not allowed (use realm/admin-permissions.json)`);
+    if ((sa?.clientRoles?.["realm-management"] || []).length) err(`${c.clientId}: service account must not hold realm-management roles`);
+    if ((realm.clientScopeMappings?.["realm-management"] || []).some((m) => m.client === c.clientId)) err(`${c.clientId}: realm-management scope mapping is not allowed`);
     const want = [...(entry.audiences || [])].sort();
     if (JSON.stringify(audiences(c)) !== JSON.stringify(want)) {
       err(`${c.clientId}: audience mappers ${audiences(c).join(",") || "<none>"} != registry ${want.join(",") || "<none>"}`);
@@ -180,6 +176,34 @@ export function checkRealm({ realm, registry, importEnv = null, importSecretKeys
     for (const a of audiences(c)) if (!knownIds.has(a)) err(`${c.clientId}: audience ${a} is not a client of the realm`);
   }
 
+  // Fine-grained admin permissions (applied by scripts/realm/apply-admin-permissions.mjs).
+  const groupPaths = new Set();
+  const collect = (gs, parent = "") => {
+    for (const g of gs || []) { const p = g.path || `${parent}/${g.name}`; groupPaths.add(p); collect(g.subGroups, p); }
+  };
+  collect(realm.groups);
+  const serviceIds = new Set(registry.clients.map((c) => c.clientId));
+  if (adminPermissions) {
+    if (adminPermissions.realm !== realm.realm) err(`admin-permissions.json realm ${adminPermissions.realm} != ${realm.realm}`);
+    for (const p of adminPermissions.permissions || []) {
+      const e = (m) => err(`${p.name}: ${m}`);
+      if (!/^fbx-[a-z0-9-]+$/.test(p.name || "")) err(`admin permission name ${p.name} must match fbx-<kebab>`);
+      if (p.resourceType !== "Groups") e("resourceType must be Groups (no realm-wide Users, Clients or Roles permission)");
+      if (!(p.groupPaths || []).length) e("groupPaths must list at least one group");
+      for (const gp of p.groupPaths || []) {
+        if (gp === "/staff" || gp.startsWith("/staff/")) e(`group ${gp} must not be a staff group`);
+        else if (!groupPaths.has(gp)) e(`group ${gp} is not in the realm`);
+      }
+      for (const sc of p.scopes || []) if (!ADMIN_PERMISSION_SCOPES.includes(sc)) e(`scope ${sc} is not allowed (only ${ADMIN_PERMISSION_SCOPES.join(", ")})`);
+      if (!(p.scopes || []).length) e("scopes must not be empty");
+      if (p.decisionStrategy !== "UNANIMOUS") e("decisionStrategy must be UNANIMOUS");
+      if (!p.reason) e("reason required");
+      if (p.policy?.type !== "client" || p.policy?.logic !== "POSITIVE") e("policy must be a POSITIVE client policy");
+      if (!(p.policy?.clients || []).length) e("policy must name at least one client");
+      for (const id of p.policy?.clients || []) if (!serviceIds.has(id)) e(`policy client ${id} is not a service client`);
+    }
+  }
+
   // FAPI 2.0 policies for open-finance TPPs.
   const policies = realm.clientPolicies?.policies || [];
   const profilesUsed = new Set(policies.filter((p) => p.enabled !== false).flatMap((p) => p.profiles || []));
@@ -236,11 +260,12 @@ export function loadFromRepo(root) {
   const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
   const realm = JSON.parse(read("realm/fintechbankx-realm.json"));
   const registry = JSON.parse(read("realm/service-clients.json"));
+  const adminPermissions = JSON.parse(read("realm/admin-permissions.json"));
   const importEnv = YAML.parse(read("deploy/kustomize/base/realm-import/env.yaml")).data;
   const es = YAML.parse(read("deploy/kustomize/base/realm-import/externalsecret.yaml"));
   const importSecretKeys = es.spec.data.map((d) => d.secretKey);
   const importSecretRefs = Object.fromEntries(es.spec.data.map((d) => [d.secretKey, d.remoteRef?.key]));
-  return { realm, registry, importEnv, importSecretKeys, importSecretRefs };
+  return { realm, registry, adminPermissions, importEnv, importSecretKeys, importSecretRefs };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
