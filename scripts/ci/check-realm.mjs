@@ -81,6 +81,7 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
   // Fine-grained admin permissions v2; a default group would also be joined
   // by every new service account, so none.
   if (realm.adminPermissionsEnabled !== true) err("adminPermissionsEnabled must be true (fine-grained admin permissions v2)");
+  if (!realm.clientScopeMappings || typeof realm.clientScopeMappings !== "object") err("clientScopeMappings must be present (empty object), or keycloak-config-cli never removes client scope mappings");
   if ((realm.defaultGroups || []).length) err("defaultGroups must be empty (service accounts would join them)");
 
   // No credential values anywhere: secret-like keys hold placeholders only.
@@ -125,6 +126,7 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     const ADMIN_ROLES_ALLOWED = [];
     if ((entry.adminRoles || []).some((r) => !ADMIN_ROLES_ALLOWED.includes(r))) err(`${c.clientId}: registry adminRoles are not allowed (use realm/admin-permissions.json)`);
     if ((sa?.clientRoles?.["realm-management"] || []).length) err(`${c.clientId}: service account must not hold realm-management roles`);
+    else if (sa && !Array.isArray(sa.clientRoles?.["realm-management"])) err(`${c.clientId}: service account must list clientRoles realm-management: [] (so keycloak-config-cli removes earlier grants)`);
     if ((realm.clientScopeMappings?.["realm-management"] || []).some((m) => m.client === c.clientId)) err(`${c.clientId}: realm-management scope mapping is not allowed`);
     const want = [...(entry.audiences || [])].sort();
     if (JSON.stringify(audiences(c)) !== JSON.stringify(want)) {

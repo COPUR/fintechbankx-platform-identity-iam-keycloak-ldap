@@ -97,8 +97,11 @@ test("the Grafana SSO client exposes roles in userinfo and stays code + PKCE", (
 
 test("no service client holds a realm-management role", () => {
   const input = fresh();
-  for (const u of input.realm.users) assert.equal(u.clientRoles?.["realm-management"], undefined, u.username);
-  assert.equal(input.realm.clientScopeMappings?.["realm-management"], undefined);
+  // Explicit empty lists, not absent keys: keycloak-config-cli only removes a
+  // user's client roles for clients listed in clientRoles, and skips
+  // client-scope-mapping cleanup when clientScopeMappings is absent.
+  for (const u of input.realm.users) assert.deepEqual(u.clientRoles, { "realm-management": [] }, u.username);
+  assert.deepEqual(input.realm.clientScopeMappings, {});
   for (const c of input.registry.clients) assert.equal(c.adminRoles, undefined, c.clientId);
 });
 
@@ -230,4 +233,13 @@ test("every overlay sets the staff web redirect, origin and post-logout URIs", a
       assert.ok(text.includes(`path: /data/${k}`), `${o} lacks ${k}`);
     }
   }
+});
+
+test("service accounts list realm-management: [] and the realm lists clientScopeMappings, so removals reach existing realms", () => {
+  const input = fresh();
+  delete input.realm.users.find((u) => u.serviceAccountClientId === "svc-ln-loan-lifecycle").clientRoles;
+  delete input.realm.clientScopeMappings;
+  const errors = checkRealm(input);
+  assert.ok(errors.some((e) => e.includes("svc-ln-loan-lifecycle: service account must list clientRoles realm-management: []")));
+  assert.ok(errors.some((e) => e.includes("clientScopeMappings must be present")));
 });

@@ -100,6 +100,13 @@ The script and config-cli are independent: a re-run of the import keeps the perm
 
 `deploy/kustomize/base/realm-import/job.yaml` runs keycloak-config-cli 6.5.1 (image pinned by digest) as an initContainer with `IMPORT_VARSUBSTITUTION_ENABLED=true`, then `apply-admin-permissions.mjs` in `node:22.22.0-alpine3.22` (pinned by digest), which receives only the bootstrap admin client credential. Non-secret inputs come from ConfigMap `keycloak-realm-import-env` (overlay-specific), secret inputs from ExternalSecret `keycloak-realm-import` (admin client, LDAP bind, 15 client credentials). keycloak-config-cli keeps remote state, so a client removed from Git is removed from Keycloak, while clients created outside Git (for example TPPs registered dynamically) are left alone.
 
+**Removals on an existing realm.** keycloak-config-cli 6.5.1 with its defaults does not remove everything Git removes (checked locally by importing the previous realm and then this one):
+
+- realm roles dropped from a client's scope mapping stay (`import.managed.scope-mapping=no-delete`; role removal is tied to `import.managed.client-scope=full`, which would also delete Keycloak's built-in client scopes such as `service_account` and strip `offline_access`, so it is not used). The Job's second step therefore removes every realm role the realm file no longer lists for a client (`reconcileScopeMappings` in `apply-admin-permissions.mjs`).
+- a user's client roles are only reconciled for clients named in that user's `clientRoles`, and client scope mappings only when `clientScopeMappings` is present. The render therefore writes `clientRoles: {"realm-management": []}` on every service account and `clientScopeMappings: {}`; `check-realm.mjs` requires both.
+
+With both in place, an upgrade from the previous realm removed `manage-users` from `svc-cus-profile-kyc` (service account and scope mapping) and the staff roles from `fintechbankx-web` and `fintechbankx-mobile`, and left the built-in client scopes intact.
+
 KeycloakRealmImport (operator CR) is not used: it only creates a missing realm and never updates an existing one.
 
 ## Local evidence (2026-10-08)

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyAdminPermissions, fetchAdminToken } from "../../realm/apply-admin-permissions.mjs";
+import { applyAdminPermissions, fetchAdminToken, reconcileScopeMappings } from "../../realm/apply-admin-permissions.mjs";
 
 const BASE = "http://kc.test:8080";
 const R = `${BASE}/admin/realms/fintechbankx`;
@@ -144,6 +144,31 @@ test("realm import Job: config-cli first, then the admin-permissions step with o
   const step = pod.containers[0];
   assert.match(step.image, /^docker\.io\/library\/node:22\.[0-9.]+-alpine[0-9.]*@sha256:[0-9a-f]{64}$/);
   assert.equal(step.envFrom, undefined);
+  assert.deepEqual(step.command.slice(-4), ["--spec", "/opt/fbx/spec/admin-permissions.json", "--realm", "/config/fintechbankx-realm.json"]);
   assert.deepEqual(step.env.filter((e) => e.valueFrom.secretKeyRef).map((e) => e.valueFrom.secretKeyRef.key).sort(), ["KEYCLOAK_CLIENTID", "KEYCLOAK_CLIENTSECRET"]);
   assert.equal(step.securityContext.readOnlyRootFilesystem, true);
+});
+
+test("scope mappings: realm roles the realm file no longer lists are removed (config-cli never removes them)", async () => {
+  const realm = { realm: "fintechbankx", scopeMappings: [
+    { client: "fintechbankx-web", roles: ["customer"] },
+    { client: "svc-ln-loan-lifecycle", roles: ["service"] },
+    { clientScope: "some-scope", roles: ["customer"] }
+  ] };
+  const f = fakeFetch({
+    [`GET ${R}/clients?clientId=fintechbankx-web`]: [200, [{ id: "web-uuid", clientId: "fintechbankx-web" }]],
+    [`GET ${R}/clients?clientId=svc-ln-loan-lifecycle`]: [200, [{ id: "ln-uuid", clientId: "svc-ln-loan-lifecycle" }]],
+    [`GET ${R}/clients/web-uuid/scope-mappings/realm`]: [200, [{ id: "r1", name: "customer" }, { id: "r2", name: "admin" }, { id: "r3", name: "banker" }]],
+    [`GET ${R}/clients/ln-uuid/scope-mappings/realm`]: [200, [{ id: "r4", name: "service" }]],
+    [`DELETE ${R}/clients/web-uuid/scope-mappings/realm`]: [204, undefined]
+  });
+  const result = await reconcileScopeMappings({ fetch: f.fetch, baseUrl: BASE, token: "t0k", realm });
+  assert.deepEqual(f.writes().map((c) => `${c.method} ${c.url}`), [`DELETE ${R}/clients/web-uuid/scope-mappings/realm`]);
+  assert.deepEqual(f.writes()[0].body, [{ id: "r2", name: "admin" }, { id: "r3", name: "banker" }]);
+  assert.deepEqual(result, [{ client: "fintechbankx-web", removed: ["admin", "banker"] }]);
+});
+
+test("scope mappings: a client of the realm file missing in Keycloak is an error", async () => {
+  const f = fakeFetch({ [`GET ${R}/clients?clientId=fintechbankx-web`]: [200, []] });
+  await assert.rejects(reconcileScopeMappings({ fetch: f.fetch, baseUrl: BASE, token: "t", realm: { realm: "fintechbankx", scopeMappings: [{ client: "fintechbankx-web", roles: ["customer"] }] } }), /client fintechbankx-web not found/);
 });

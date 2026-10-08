@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-// Applies the fine-grained admin permissions (Keycloak 26 FGAP v2) listed in
+// Post-import step of the realm import Job, two parts:
+// 1. Removes realm roles from client scope mappings that the realm file no
+//    longer lists. keycloak-config-cli 6.5.1 adds scope-mapping roles but
+//    only removes them with import.managed.client-scope=full, which would
+//    also delete Keycloak's built-in client scopes (checked locally), so a
+//    narrowed scope mapping (e.g. staff roles off a customer client) would
+//    otherwise never reach an existing realm.
+// 2. Applies the fine-grained admin permissions (Keycloak 26 FGAP v2) listed in
 // realm/admin-permissions.json to a running Keycloak. keycloak-config-cli
 // 6.5.1 skips the system-managed admin-permissions client, so this runs as
 // the second step of the realm import Job, after config-cli has created the
@@ -10,7 +17,7 @@
 // place (PUT), a missing one is created (POST). Nothing is ever deleted.
 // No dependencies beyond Node 22 (global fetch).
 //
-// usage: node apply-admin-permissions.mjs --spec <admin-permissions.json>
+// usage: node apply-admin-permissions.mjs --spec <admin-permissions.json> [--realm <realm.json>]
 // env:   KEYCLOAK_URL, KEYCLOAK_LOGINREALM (default master),
 //        KEYCLOAK_GRANTTYPE client_credentials (default) with
 //        KEYCLOAK_CLIENTID + KEYCLOAK_CLIENTSECRET, or password with
@@ -51,8 +58,8 @@ export async function fetchAdminToken({ fetch = globalThis.fetch, env = process.
   return body.access_token;
 }
 
-export async function applyAdminPermissions({ fetch = globalThis.fetch, baseUrl, token, spec, log = () => {} }) {
-  const R = `${trimSlash(baseUrl)}/admin/realms/${enc(spec.realm)}`;
+function adminApi({ fetch, baseUrl, token, realm }) {
+  const R = `${trimSlash(baseUrl)}/admin/realms/${enc(realm)}`;
   const call = async (method, url, body) => {
     const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -74,9 +81,35 @@ export async function applyAdminPermissions({ fetch = globalThis.fetch, baseUrl,
   const clientUuid = async (clientId, hint) => {
     const found = (await get(`${R}/clients?clientId=${enc(clientId)}`)) || [];
     const c = found.find((x) => x.clientId === clientId);
-    if (!c) throw new Error(hint || `client ${clientId} not found in realm ${spec.realm}`);
+    if (!c) throw new Error(hint || `client ${clientId} not found in realm ${realm}`);
     return c.id;
   };
+  return { R, get, write, clientUuid };
+}
+
+// Removes realm roles from each client's scope mapping that the realm file
+// does not list for that client. Only clients named in realm.scopeMappings;
+// never adds (keycloak-config-cli does).
+export async function reconcileScopeMappings({ fetch = globalThis.fetch, baseUrl, token, realm, log = () => {} }) {
+  const api = adminApi({ fetch, baseUrl, token, realm: realm.realm });
+  const results = [];
+  for (const sm of realm.scopeMappings || []) {
+    if (!sm.client) continue;
+    const id = await api.clientUuid(sm.client);
+    const url = `${api.R}/clients/${id}/scope-mappings/realm`;
+    const current = (await api.get(url)) || [];
+    const extra = current.filter((r) => !(sm.roles || []).includes(r.name));
+    if (!extra.length) continue;
+    await api.write("DELETE", url, extra);
+    const removed = extra.map((r) => r.name);
+    log(`scope mapping ${sm.client}: removed ${removed.join(",")}`);
+    results.push({ client: sm.client, removed });
+  }
+  return results;
+}
+
+export async function applyAdminPermissions({ fetch = globalThis.fetch, baseUrl, token, spec, log = () => {} }) {
+  const { R, get, write, clientUuid } = adminApi({ fetch, baseUrl, token, realm: spec.realm });
 
   // Resolve everything before the first write, so a bad spec changes nothing.
   const ap = await clientUuid("admin-permissions", `realm ${spec.realm} has no admin-permissions client; set adminPermissionsEnabled: true (Keycloak 26.2+ FGAP v2) and import the realm first`);
@@ -143,16 +176,24 @@ export async function applyAdminPermissions({ fetch = globalThis.fetch, baseUrl,
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const i = process.argv.indexOf("--spec");
-  if (i < 0 || !process.argv[i + 1]) {
-    console.error("usage: apply-admin-permissions.mjs --spec <admin-permissions.json>");
+  const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
+  const specPath = arg("--spec");
+  if (!specPath) {
+    console.error("usage: apply-admin-permissions.mjs --spec <admin-permissions.json> [--realm <realm.json>]");
     process.exit(2);
   }
   try {
-    const spec = JSON.parse(fs.readFileSync(process.argv[i + 1], "utf8"));
+    const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
     const token = await fetchAdminToken();
-    const results = await applyAdminPermissions({ baseUrl: process.env.KEYCLOAK_URL, token, spec, log: (m) => console.log(`admin-permissions: ${m}`) });
-    console.log(`admin-permissions: OK (${results.length} object(s) in realm ${spec.realm})`);
+    const out = (m) => console.log(`admin-permissions: ${m}`);
+    const realmPath = arg("--realm");
+    if (realmPath) {
+      const realm = JSON.parse(fs.readFileSync(realmPath, "utf8"));
+      const removed = await reconcileScopeMappings({ baseUrl: process.env.KEYCLOAK_URL, token, realm, log: out });
+      out(`scope mappings reconciled (${removed.length} client(s) narrowed)`);
+    }
+    const results = await applyAdminPermissions({ baseUrl: process.env.KEYCLOAK_URL, token, spec, log: out });
+    out(`OK (${results.length} object(s) in realm ${spec.realm})`);
   } catch (e) {
     console.error(`admin-permissions: FAILED: ${e.message}`);
     process.exit(1);

@@ -5,7 +5,9 @@
 #
 # Two steps, in order: initContainer keycloak-config-cli imports the realm,
 # then container admin-permissions (Node, scripts/realm/apply-admin-permissions.mjs)
-# creates or updates the fine-grained admin permissions of
+# removes realm roles from client scope mappings the realm file no longer
+# lists (config-cli never removes them safely) and creates or updates the
+# fine-grained admin permissions of
 # realm/admin-permissions.json, which keycloak-config-cli 6.5.1 cannot import
 # (it skips the system-managed admin-permissions client). Both use the same
 # bootstrap admin client; the second step receives only that credential.
@@ -78,7 +80,7 @@ spec:
         - name: admin-permissions
           image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
           imagePullPolicy: IfNotPresent
-          command: ["node", "/opt/fbx/script/apply-admin-permissions.mjs", "--spec", "/opt/fbx/spec/admin-permissions.json"]
+          command: ["node", "/opt/fbx/script/apply-admin-permissions.mjs", "--spec", "/opt/fbx/spec/admin-permissions.json", "--realm", "/config/fintechbankx-realm.json"]
           env:
             - name: KEYCLOAK_URL
               valueFrom:
@@ -117,6 +119,9 @@ spec:
               readOnly: true
             - name: admin-permissions-spec
               mountPath: /opt/fbx/spec
+              readOnly: true
+            - name: realm
+              mountPath: /config
               readOnly: true
       volumes:
         - name: admin-permissions-script

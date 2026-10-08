@@ -1774,6 +1774,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1783,6 +1786,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1792,6 +1798,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1801,6 +1810,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1810,6 +1822,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1819,6 +1834,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1828,6 +1846,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1837,6 +1858,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1846,6 +1870,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1855,6 +1882,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1864,6 +1894,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1873,6 +1906,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1882,6 +1918,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1891,6 +1930,9 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     },
     {
@@ -1900,9 +1942,13 @@
       "realmRoles": [
         "service"
       ],
+      "clientRoles": {
+        "realm-management": []
+      },
       "groups": []
     }
   ],
+  "clientScopeMappings": {},
   "components": {
     "org.keycloak.storage.UserStorageProvider": [
       {

@@ -398,9 +398,16 @@ const realm = {
     realmRoles: ["service"],
     // No realm-management roles on any service account (check-realm). User
     // administration is granted per group through fine-grained admin
-    // permissions v2 (realm/admin-permissions.json).
+    // permissions v2 (realm/admin-permissions.json). The explicit empty list
+    // makes keycloak-config-cli remove roles granted earlier (it only
+    // reconciles the clients listed here).
+    clientRoles: { "realm-management": [] },
     groups: []
   })),
+
+  // Present and empty: keycloak-config-cli skips client-scope-mapping cleanup
+  // when the key is absent, so an earlier realm-management mapping would stay.
+  clientScopeMappings: {},
 
   components: {
     "org.keycloak.storage.UserStorageProvider": [
