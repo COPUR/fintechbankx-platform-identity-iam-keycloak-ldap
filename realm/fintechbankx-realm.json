@@ -1424,6 +1424,19 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
+        },
+        {
+          "name": "aud-svc-pay-request-to-pay",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-pay-request-to-pay",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
         }
       ],
       "defaultClientScopes": [

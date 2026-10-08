@@ -242,7 +242,8 @@
         "svc-of-open-products-catalog",
         "svc-of-atm-directory",
         "svc-pay-recurring-mandates",
-        "svc-pay-bulk-orchestration"
+        "svc-pay-bulk-orchestration",
+        "svc-pay-request-to-pay"
       ],
       "audienceProvenance": {
         "svc-of-consent-authorization": "derived (platform pillar): TPPs call the consent API with their access token",
@@ -253,7 +254,8 @@
         "svc-of-open-products-catalog": "confirmed by service thread 2026-10-08 (open-finance resource service)",
         "svc-of-atm-directory": "confirmed by service thread 2026-10-08 (open-finance resource service)",
         "svc-pay-recurring-mandates": "confirmed by the lending and payments thread 2026-10-08 (mandates PR #13, /open-finance/v1/vrp, DPoP)",
-        "svc-pay-bulk-orchestration": "confirmed by the lending and payments thread 2026-10-08 (bulk PR #13, /open-finance/v1/file-payments, DPoP)"
+        "svc-pay-bulk-orchestration": "confirmed by the lending and payments thread 2026-10-08 (bulk PR #13, /open-finance/v1/file-payments, DPoP)",
+        "svc-pay-request-to-pay": "confirmed by the lending and payments thread 2026-10-08 (request-to-pay PR #14, /open-finance/v1/par and /payment-consents, DPoP)"
       }
     }
   ],
