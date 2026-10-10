@@ -99,6 +99,11 @@ jobs:
       - name: Operator package builds
         run: kustomize build deploy/kustomize/operator > /dev/null
 
+      - name: Keycloak CR checks on rendered overlays (database TLS verify-full)
+        env:
+          FBX_REQUIRE_KUSTOMIZE: '1'
+        run: node --test scripts/validation/test/keycloak-cr.test.mjs
+
       - name: Mesh guardrails on rendered manifests
         run: |
           set -euo pipefail
