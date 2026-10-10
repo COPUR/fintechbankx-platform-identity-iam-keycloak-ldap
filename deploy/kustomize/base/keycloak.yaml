@@ -65,10 +65,12 @@ spec:
     # name the endpoint (sslmode=require would trust any certificate). The
     # bundle is ConfigMap rds-ca-bundle, published in this namespace by the
     # mesh repo's trust-manager Bundle and mounted below (podTemplate).
-    # Database settings come only from spec.db and this option: a db-url set
-    # any other way (spec.env, pod template env or args, another spelling of
-    # the option, keycloak.conf) drops these properties, and
-    # scripts/validation/test/keycloak-cr.test.mjs fails on it.
+    # Database settings come only from spec.db and this option. Host and
+    # database in spec.db (identity-environment in the overlays) must be plain
+    # names: a '?' there moves these properties out of the query string. A
+    # db-url set any other way (spec.env, pod template env or args, another
+    # spelling of the option, keycloak.conf) drops them.
+    # scripts/validation/test/keycloak-cr.test.mjs fails on each of these.
     - name: db-url-properties
       value: "?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem"
     - name: health-enabled

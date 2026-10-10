@@ -70,6 +70,30 @@ const KEYCLOAK_CONF_DIR = "/opt/keycloak/conf";
 const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/spec/db/url", "/spec/env"];
 const JVM_OPTIONS_ENV = /^(JAVA_OPTS.*|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
 
+// spec.db: the operator passes vendor, host, port and database through
+// unescaped as the options db, db-url-host, db-url-port and db-url-database
+// (KeycloakDistConfigurator.configureDatabase), and Keycloak builds
+// jdbc:postgresql://<host>:<port>/<database><db-url-properties>. pgjdbc
+// starts the query string at the first '?', so a '?' in host or database
+// moves sslmode=verify-full into another parameter and the connection falls
+// back to the default sslmode (prefer). The check requires vendor postgres,
+// an integer port, a host made only of letters, digits, '.', '-' and '_',
+// and a database name made only of letters, digits and '_' (so no '?', '&',
+// '=', ';', '/', ':', '%', '$', whitespace or quotes). The overlays set host
+// and database through ConfigMap identity-environment (data.databaseHost,
+// data.databaseName), whose values get the same check.
+const DB_HOST_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const DB_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const IDENTITY_ENVIRONMENT = "identity-environment";
+const plainHostProblems = (value, field) =>
+  typeof value === "string" && DB_HOST_PATTERN.test(value) ? [] : [`${field} must be a plain host name (letters, digits, '.', '-', '_'), found ${JSON.stringify(value)}`];
+const plainDatabaseProblems = (value, field) =>
+  typeof value === "string" && DB_NAME_PATTERN.test(value) ? [] : [`${field} must be a plain database name (letters, digits, '_'), found ${JSON.stringify(value)}`];
+const environmentDatabaseProblems = (cm) => [
+  ...plainHostProblems(cm?.data?.databaseHost, "data.databaseHost (spec.db.host)"),
+  ...plainDatabaseProblems(cm?.data?.databaseName, "data.databaseName (spec.db.database)")
+];
+
 // Env var form of a Keycloak option or variable name: upper case, every
 // non-alphanumeric character an underscore. The operator names the variable
 // for an additionalOptions entry KC_ + this (getKeycloakOptionEnvVarName).
@@ -104,6 +128,10 @@ function databaseTlsProblems(kc) {
   if (/sslfactory|sslhostnameverifier/i.test(text)) problems.push("a custom sslfactory or sslhostnameverifier can skip certificate verification");
   if (/jdbc:/i.test(text)) problems.push("the Keycloak CR carries a JDBC URL; the operator builds it from spec.db host, port and database");
   if (kc?.spec?.db?.url !== undefined) problems.push("spec.db.url replaces the default JDBC URL and drops db-url-properties");
+  const db = kc?.spec?.db || {};
+  if (db.vendor !== "postgres") problems.push(`spec.db.vendor must be postgres, found ${JSON.stringify(db.vendor)}`);
+  if (!Number.isInteger(db.port)) problems.push(`spec.db.port must be an integer, found ${JSON.stringify(db.port)}`);
+  problems.push(...plainHostProblems(db.host, "spec.db.host"), ...plainDatabaseProblems(db.database, "spec.db.database"));
   const options = kc?.spec?.additionalOptions || [];
   for (const o of options) {
     const env = `KC_${envForm(o.name)}`;
@@ -207,7 +235,22 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "KC_CONFIG_FILE in spec.env": [(kc) => { kc.spec.env = [{ name: "KC_CONFIG_FILE", value: "/opt/keycloak/conf/other.conf" }]; }, /spec\.env KC_CONFIG_FILE points Keycloak at another configuration file/],
     "a config-file option": [(kc) => { kc.spec.additionalOptions.push({ name: "config-file", value: "/opt/keycloak/conf/other.conf" }); }, /option config-file \(KC_CONFIG_FILE\) points Keycloak at another configuration file/],
     "a mount over the Keycloak conf directory": [(kc) => { pod(kc).containers[0].volumeMounts.push({ name: "conf", mountPath: "/opt/keycloak/conf/" }); }, /mount at \/opt\/keycloak\/conf\/ replaces Keycloak's configuration files/],
-    "a mount of keycloak.conf": [(kc) => { pod(kc).containers[0].volumeMounts.push({ name: "conf", mountPath: "/opt/keycloak/conf/keycloak.conf", subPath: "keycloak.conf" }); }, /mount at \/opt\/keycloak\/conf\/keycloak\.conf replaces Keycloak's configuration files/]
+    "a mount of keycloak.conf": [(kc) => { pod(kc).containers[0].volumeMounts.push({ name: "conf", mountPath: "/opt/keycloak/conf/keycloak.conf", subPath: "keycloak.conf" }); }, /mount at \/opt\/keycloak\/conf\/keycloak\.conf replaces Keycloak's configuration files/],
+    // pgjdbc starts the query string at the first '?' of the URL the
+    // operator builds from spec.db, so db-url-properties no longer sets sslmode.
+    "a '?' in spec.db.database": [(kc) => { kc.spec.db.database = "db_idn_keycloak_ldap_dev?"; }, /spec\.db\.database must be a plain database name/],
+    "query parameters in spec.db.database": [(kc) => { kc.spec.db.database = "db_idn_keycloak_ldap_dev?connectTimeout=10&"; }, /spec\.db\.database must be a plain database name/],
+    "a path in spec.db.database": [(kc) => { kc.spec.db.database = "db/x"; }, /spec\.db\.database must be a plain database name/],
+    "whitespace in spec.db.database": [(kc) => { kc.spec.db.database = "db x"; }, /spec\.db\.database must be a plain database name/],
+    "a quote in spec.db.database": [(kc) => { kc.spec.db.database = "db\""; }, /spec\.db\.database must be a plain database name/],
+    "an expression in spec.db.database": [(kc) => { kc.spec.db.database = "${DB_NAME}"; }, /spec\.db\.database must be a plain database name/],
+    "no spec.db.database": [(kc) => { delete kc.spec.db.database; }, /spec\.db\.database must be a plain database name/],
+    "a '?' in spec.db.host": [(kc) => { kc.spec.db.host = "writer.example?sslmode=disable&"; }, /spec\.db\.host must be a plain host name/],
+    "a port and path in spec.db.host": [(kc) => { kc.spec.db.host = "writer.example:5432/db"; }, /spec\.db\.host must be a plain host name/],
+    "a ';' in spec.db.host": [(kc) => { kc.spec.db.host = "writer.example;x=y"; }, /spec\.db\.host must be a plain host name/],
+    "no spec.db.host": [(kc) => { delete kc.spec.db.host; }, /spec\.db\.host must be a plain host name/],
+    "spec.db.port as a string": [(kc) => { kc.spec.db.port = "5432/db?"; }, /spec\.db\.port must be an integer/],
+    "spec.db.vendor other than postgres": [(kc) => { kc.spec.db.vendor = "mysql"; }, /spec\.db\.vendor must be postgres/]
   };
   const missed = [];
   for (const [name, [mutate, expected]] of Object.entries(cases)) {
@@ -400,6 +443,53 @@ test("the patch check finds every patch, replacement and transformer that can re
     let problems;
     try { problems = kustomizationPatchProblems(k, load); } catch (e) { problems = [`threw ${e.message}`]; }
     if (problems.length !== 0) missed.push(`${name}: expected no problem, got ${JSON.stringify(problems)}`);
+  }
+  assert.deepEqual(missed, []);
+});
+
+// The overlays set spec.db.host and spec.db.database through
+// identity-environment (data.databaseHost, data.databaseName), which
+// components/environment copies into the CR.
+function identityEnvironments(overlay) {
+  const found = [];
+  for (const { dir, k } of kustomizationFiles(path.join(root, "deploy/kustomize/overlays", overlay))) {
+    for (const entry of k.resources || []) {
+      if (isRemote(entry)) continue;
+      const p = path.resolve(dir, entry);
+      if (fs.statSync(p).isDirectory()) continue;
+      for (const doc of YAML.parseAllDocuments(fs.readFileSync(p, "utf8")).map((d) => d.toJS())) {
+        if (doc?.kind === "ConfigMap" && doc?.metadata?.name === IDENTITY_ENVIRONMENT) found.push(doc);
+      }
+    }
+  }
+  return found;
+}
+
+test("every overlay feeds spec.db a plain host and database name through identity-environment", () => {
+  for (const overlay of overlays) {
+    const found = identityEnvironments(overlay);
+    assert.equal(found.length, 1, `${overlay} has exactly one ConfigMap ${IDENTITY_ENVIRONMENT}`);
+    assert.deepEqual(environmentDatabaseProblems(found[0]), [], overlay);
+  }
+});
+
+test("the identity-environment check rejects anything but a plain host and database name", () => {
+  const env = (data) => ({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: IDENTITY_ENVIRONMENT }, data });
+  const host = "fbx-dev-identity-keycloak.cluster-x.me-central-1.rds.amazonaws.com";
+  assert.deepEqual(environmentDatabaseProblems(env({ databaseHost: host, databaseName: "db_idn_keycloak_ldap_dev" })), []);
+  const cases = {
+    "a '?' in databaseName": [env({ databaseHost: host, databaseName: "db_idn_keycloak_ldap_dev?" }), /databaseName \(spec\.db\.database\) must be a plain database name/],
+    "query parameters in databaseName": [env({ databaseHost: host, databaseName: "db_idn_keycloak_ldap_dev?connectTimeout=10&" }), /databaseName/],
+    "no databaseName": [env({ databaseHost: host }), /databaseName/],
+    "a '?' in databaseHost": [env({ databaseHost: `${host}?sslmode=disable&`, databaseName: "db" }), /databaseHost \(spec\.db\.host\) must be a plain host name/],
+    "a '/' in databaseHost": [env({ databaseHost: `${host}/db`, databaseName: "db" }), /databaseHost/],
+    "a quote in databaseHost": [env({ databaseHost: `'${host}'`, databaseName: "db" }), /databaseHost/],
+    "no data": [env(undefined), /databaseHost/]
+  };
+  const missed = [];
+  for (const [name, [cm, expected]] of Object.entries(cases)) {
+    const problems = environmentDatabaseProblems(cm);
+    if (!problems.some((p) => expected.test(p))) missed.push(`${name}: expected a problem matching ${expected}, got ${JSON.stringify(problems)}`);
   }
   assert.deepEqual(missed, []);
 });
