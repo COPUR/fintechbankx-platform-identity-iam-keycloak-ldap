@@ -89,6 +89,16 @@ const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/sp
 // file (@argfiles, -XX:VMOptionsFile, -XX:Flags).
 const JAVA_ARGS_ENV = /^(JAVA|JAVA_HOME|JAVA_OPTS.*|JAVA_ADD_OPENS|JAVA_LOCALE|(KC_)?DEBUG(_PORT|_SUSPEND)?|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
 
+// Env names the Keycloak container may set, matched case-sensitively as Linux
+// does: Keycloak options (KC_*, checked above as database options and config
+// files), KCKEY_* (value checked) and the JAVA_ARGS_ENV names (value checked).
+// kc.sh also reads variables it never initialises (result, CONFIG_ARGS among
+// them in 26.7.5) and puts them on the java command line through eval, so
+// every other name is refused instead of being modelled one at a time; add a
+// name here only with a check for what kc.sh or the JVM does with it.
+const KEYCLOAK_ENV_NAME = /^(KC_[A-Z0-9_]+|KCKEY_[A-Z0-9_]+)$/;
+const allowedKeycloakEnvName = (name) => KEYCLOAK_ENV_NAME.test(name) || JAVA_ARGS_ENV.test(name);
+
 // spec.db: the operator passes vendor, host, port and database through
 // unescaped as the options db, db-url-host, db-url-port and db-url-database
 // (KeycloakDistConfigurator.configureDatabase), and Keycloak builds
@@ -164,6 +174,11 @@ function databaseTlsProblems(kc) {
   for (const [where, envs] of envSources) {
     for (const e of envs || []) {
       const env = envForm(e.name);
+      if (where !== "spec.env" && where !== "podTemplate containers[0].env") {
+        // Other containers do not run kc.sh; the checks below still apply.
+      } else if (!allowedKeycloakEnvName(String(e.name ?? ""))) {
+        problems.push(`${where} ${e.name} is not an env name the Keycloak container may set (allowed: KC_*, KCKEY_* and the java argument variables, all value checked)`);
+      }
       // Only a literal value can be checked; secret and valueFrom cannot.
       const literal = e.value === undefined || e.value === null ? undefined : String(e.value);
       if (isDatabaseOption(env)) problems.push(`${where} ${e.name} sets a database option outside spec.db`);
@@ -288,7 +303,14 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "JAVA_ADD_OPENS from a Secret": [(kc) => { kc.spec.env = [{ name: "JAVA_ADD_OPENS", secret: { name: "x", key: "y" } }]; }, /JAVA_ADD_OPENS must be a literal value/],
     "DEBUG_PORT from a Secret": [(kc) => { kc.spec.env = [{ name: "DEBUG_PORT", secret: { name: "x", key: "y" } }]; }, /DEBUG_PORT must be a literal value/],
     "JAVA from a Secret (kc.sh runs it through eval)": [(kc) => { pod(kc).containers[0].env = [{ name: "JAVA", valueFrom: { secretKeyRef: { name: "x", key: "y" } } }]; }, /JAVA must be a literal value/],
-    "a quote in a KCKEY_ value": [(kc) => { kc.spec.env = [{ name: "KCKEY_FOO", value: "'db-url'" }]; }, /KCKEY_FOO must be a literal value without quotes or backslashes/]
+    "a quote in a KCKEY_ value": [(kc) => { kc.spec.env = [{ name: "KCKEY_FOO", value: "'db-url'" }]; }, /KCKEY_FOO must be a literal value without quotes or backslashes/],
+    // kc.sh never initialises result or CONFIG_ARGS, so their environment
+    // values reach the java command line through eval; any name outside the
+    // allow-list is refused rather than modelled one by one.
+    "kc.sh's uninitialised result in spec.env": [(kc) => { kc.spec.env = [{ name: "result", value: "-D'kc'.db-url=jd'bc':postgresql://h:5432/d" }]; }, /spec\.env result is not an env name the Keycloak container may set/],
+    "kc.sh's uninitialised CONFIG_ARGS in spec.env": [(kc) => { kc.spec.env = [{ name: "CONFIG_ARGS", value: " --db-url=jd'bc':postgresql://h:5432/d" }]; }, /spec\.env CONFIG_ARGS is not an env name the Keycloak container may set/],
+    "SERVER_OPTS in the pod template": [(kc) => { pod(kc).containers[0].env = [{ name: "SERVER_OPTS", value: "x" }]; }, /podTemplate containers\[0\]\.env SERVER_OPTS is not an env name the Keycloak container may set/],
+    "a lower-case kc_ name (Linux env names are case-sensitive)": [(kc) => { kc.spec.env = [{ name: "kc_log_level", value: "info" }]; }, /spec\.env kc_log_level is not an env name the Keycloak container may set/]
   };
   // Plain JVM options and a KCKEY_ mapping to another option stay allowed.
   const plain = structuredClone(cr);
