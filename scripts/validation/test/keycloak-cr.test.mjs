@@ -60,6 +60,9 @@ test("the Keycloak database connection verifies the server certificate", () => {
 //   the pod template, any spelling; a KCKEY_* env var naming a db option (it
 //   maps another KC_* variable to that option); KC_CONFIG_FILE or option
 //   config-file; kc. system properties in env values (JAVA_OPTS_APPEND);
+// - env values it cannot read as written (see JAVA_ARGS_ENV): "$(" anywhere
+//   in the CR, and quotes or backslashes in the variables kc.sh or the JVM
+//   turns into java arguments and in KCKEY_*;
 // - pod template args or command (CLI options such as --db-url), envFrom
 //   (its variables are not visible here) and mounts over /opt/keycloak/conf
 //   (keycloak.conf);
@@ -68,7 +71,23 @@ const RDS_CA_CONFIGMAP = "rds-ca-bundle";
 const RDS_CA_KEY = "global-bundle.pem";
 const KEYCLOAK_CONF_DIR = "/opt/keycloak/conf";
 const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/spec/db", "/spec/env"];
-const JVM_OPTIONS_ENV = /^(JAVA_OPTS.*|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
+
+// Env values. The operator passes spec.env, additionalOptions and the CR's
+// first-class options to the Keycloak container as env values, and
+// Kubernetes expands $(VAR) in an env value from the variables defined before
+// it, which can come from a Secret. So no value in the CR may contain "$("
+// (this also refuses the escaped "$$("). kc.sh (26.7.5) builds the java
+// command line from JAVA_OPTS, JAVA_OPTS_KC_HEAP, JAVA_ADD_OPENS, JAVA_LOCALE,
+// JAVA_OPTS_APPEND and, in debug mode (KC_DEBUG or DEBUG), the debug port and
+// suspend values (KC_DEBUG_PORT or DEBUG_PORT, KC_DEBUG_SUSPEND or
+// DEBUG_SUSPEND); it splits them with xargs, which removes quotes and
+// backslashes, and runs JAVA (default JAVA_HOME/bin/java) through eval. The
+// JVM splits JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS and _JAVA_OPTIONS and
+// removes quotes. These variables and KCKEY_* must be literal values without
+// a quote (' or ") or backslash, so the -Dkc. / -Dquarkus. and jdbc: checks
+// read the text Java gets. Not checked: options a JVM argument loads from a
+// file (@argfiles, -XX:VMOptionsFile, -XX:Flags).
+const JAVA_ARGS_ENV = /^(JAVA|JAVA_HOME|JAVA_OPTS.*|JAVA_ADD_OPENS|JAVA_LOCALE|(KC_)?DEBUG(_PORT|_SUSPEND)?|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
 
 // spec.db: the operator passes vendor, host, port and database through
 // unescaped as the options db, db-url-host, db-url-port and db-url-database
@@ -127,6 +146,7 @@ function databaseTlsProblems(kc) {
   if (sslmodeCount !== 1) problems.push(`expected exactly one sslmode in the Keycloak CR, found ${sslmodeCount}`);
   if (/sslfactory|sslhostnameverifier/i.test(text)) problems.push("a custom sslfactory or sslhostnameverifier can skip certificate verification");
   if (/jdbc:/i.test(text)) problems.push("the Keycloak CR carries a JDBC URL; the operator builds it from spec.db host, port and database");
+  if (text.includes("$(")) problems.push('the Keycloak CR contains "$(": Kubernetes expands $(VAR) in the container\'s env values from variables defined before it, which can come from a Secret');
   if (kc?.spec?.db?.url !== undefined) problems.push("spec.db.url replaces the default JDBC URL and drops db-url-properties");
   const db = kc?.spec?.db || {};
   if (db.vendor !== "postgres") problems.push(`spec.db.vendor must be postgres, found ${JSON.stringify(db.vendor)}`);
@@ -148,13 +168,13 @@ function databaseTlsProblems(kc) {
       const literal = e.value === undefined || e.value === null ? undefined : String(e.value);
       if (isDatabaseOption(env)) problems.push(`${where} ${e.name} sets a database option outside spec.db`);
       if (env === "KC_CONFIG_FILE") problems.push(`${where} ${e.name} points Keycloak at another configuration file`);
-      if (env.startsWith("KCKEY_")) {
+      const why = env.startsWith("KCKEY_") ? `it names the option KC_${env.slice(6)} sets` : JAVA_ARGS_ENV.test(env) ? "kc.sh or the JVM turns it into java arguments" : undefined;
+      if (why && (literal === undefined || /['"\\]/.test(literal))) problems.push(`${where} ${e.name} must be a literal value without quotes or backslashes (${why})`);
+      if (env.startsWith("KCKEY_") && literal !== undefined) {
         const target = `KC_${envForm(literal)}`;
-        if (literal === undefined) problems.push(`${where} ${e.name} must be a literal value (it names the option KC_${env.slice(6)} sets)`);
-        else if (isDatabaseOption(target)) problems.push(`${where} ${e.name} maps KC_${env.slice(6)} to the database option ${literal}`);
+        if (isDatabaseOption(target)) problems.push(`${where} ${e.name} maps KC_${env.slice(6)} to the database option ${literal}`);
         else if (target === "KC_CONFIG_FILE") problems.push(`${where} ${e.name} maps KC_${env.slice(6)} to ${literal}, another configuration file`);
       }
-      if (JVM_OPTIONS_ENV.test(env) && literal === undefined) problems.push(`${where} ${e.name} must be a literal value (JVM options can set kc. system properties)`);
       if (literal !== undefined && /-D(kc|quarkus)\./i.test(literal)) problems.push(`${where} ${e.name} sets a kc. or quarkus. system property`);
     }
   }
@@ -250,8 +270,30 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "a ';' in spec.db.host": [(kc) => { kc.spec.db.host = "writer.example;x=y"; }, /spec\.db\.host must be a plain host name/],
     "no spec.db.host": [(kc) => { delete kc.spec.db.host; }, /spec\.db\.host must be a plain host name/],
     "spec.db.port as a string": [(kc) => { kc.spec.db.port = "5432/db?"; }, /spec\.db\.port must be an integer/],
-    "spec.db.vendor other than postgres": [(kc) => { kc.spec.db.vendor = "mysql"; }, /spec\.db\.vendor must be postgres/]
+    "spec.db.vendor other than postgres": [(kc) => { kc.spec.db.vendor = "mysql"; }, /spec\.db\.vendor must be postgres/],
+    // Kubernetes expands $(VAR) in env values from the variables defined
+    // before it, which can come from a Secret.
+    "a KCKEY_ env naming its option through $(VAR)": [(kc) => { kc.spec.env = [{ name: "OPTION_NAME", value: "db-url" }, { name: "KC_FOO", secret: { name: "keycloak-db", key: "url" } }, { name: "KCKEY_FOO", value: "$(OPTION_NAME)" }]; }, /contains "\$\("/],
+    "JAVA_OPTS_APPEND set through $(VAR) from a Secret": [(kc) => { kc.spec.env = [{ name: "EXTRA_JVM", secret: { name: "keycloak-db", key: "jvm" } }, { name: "JAVA_OPTS_APPEND", value: "$(EXTRA_JVM)" }]; }, /contains "\$\("/],
+    "$(VAR) in a pod template env value": [(kc) => { pod(kc).containers[0].env = [{ name: "KC_LOG_LEVEL", value: "$(LEVEL)" }]; }, /contains "\$\("/],
+    "$(VAR) in an additionalOptions value": [(kc) => { kc.spec.additionalOptions.push({ name: "log-level", value: "$(LEVEL)" }); }, /contains "\$\("/],
+    // kc.sh passes JAVA_OPTS through xargs, which removes quotes and
+    // backslashes; the JVM removes quotes from JAVA_TOOL_OPTIONS and
+    // JDK_JAVA_OPTIONS.
+    "a quoted kc. property in JAVA_OPTS_APPEND": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-D'kc'.db-url=jd'bc':postgresql://h:5432/d" }]; }, /JAVA_OPTS_APPEND must be a literal value without quotes or backslashes/],
+    "a backslash in JAVA_TOOL_OPTIONS": [(kc) => { pod(kc).containers[0].env = [{ name: "JAVA_TOOL_OPTIONS", value: "-D\\kc.db-url=x" }]; }, /JAVA_TOOL_OPTIONS must be a literal value without quotes or backslashes/],
+    "double quotes in JDK_JAVA_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JDK_JAVA_OPTIONS", value: '-D"kc".db-url=x' }]; }, /JDK_JAVA_OPTIONS must be a literal value without quotes or backslashes/],
+    "a quote in JAVA_LOCALE (kc.sh appends it to JAVA_OPTS)": [(kc) => { kc.spec.env = [{ name: "JAVA_LOCALE", value: "-D'kc'.db-url=x" }]; }, /JAVA_LOCALE must be a literal value without quotes or backslashes/],
+    "a quote in KC_DEBUG_SUSPEND (kc.sh puts it in the jdwp option)": [(kc) => { kc.spec.env = [{ name: "KC_DEBUG_SUSPEND", value: "n -D'kc'.db-url=x" }]; }, /KC_DEBUG_SUSPEND must be a literal value without quotes or backslashes/],
+    "JAVA_ADD_OPENS from a Secret": [(kc) => { kc.spec.env = [{ name: "JAVA_ADD_OPENS", secret: { name: "x", key: "y" } }]; }, /JAVA_ADD_OPENS must be a literal value/],
+    "DEBUG_PORT from a Secret": [(kc) => { kc.spec.env = [{ name: "DEBUG_PORT", secret: { name: "x", key: "y" } }]; }, /DEBUG_PORT must be a literal value/],
+    "JAVA from a Secret (kc.sh runs it through eval)": [(kc) => { pod(kc).containers[0].env = [{ name: "JAVA", valueFrom: { secretKeyRef: { name: "x", key: "y" } } }]; }, /JAVA must be a literal value/],
+    "a quote in a KCKEY_ value": [(kc) => { kc.spec.env = [{ name: "KCKEY_FOO", value: "'db-url'" }]; }, /KCKEY_FOO must be a literal value without quotes or backslashes/]
   };
+  // Plain JVM options and a KCKEY_ mapping to another option stay allowed.
+  const plain = structuredClone(cr);
+  plain.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-XX:+UseZGC -Dfile.encoding=UTF-8" }, { name: "KC_FOO", value: "info" }, { name: "KCKEY_FOO", value: "log-level" }];
+  assert.deepEqual(databaseTlsProblems(plain), []);
   const missed = [];
   for (const [name, [mutate, expected]] of Object.entries(cases)) {
     const kc = structuredClone(cr);
