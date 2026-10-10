@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkRealm, loadFromRepo, secretEnvName } from "../../ci/check-realm.mjs";
+import * as realmCheck from "../../ci/check-realm.mjs";
+const { checkRealm, loadFromRepo, secretEnvName } = realmCheck;
+const tppClientErrors = (...args) => realmCheck.tppClientErrors(...args);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const fresh = () => structuredClone(loadFromRepo(root));
@@ -398,4 +400,150 @@ test("every client tagged fbx.client-type=open-finance-tpp emits fbx_client_type
   t.defaultClientScopes = t.defaultClientScopes.filter((s) => s !== "fbx-client-type-open-finance-tpp");
   t.optionalClientScopes.push("fbx-client-type-open-finance-tpp");
   assert.ok(checkRealm(optional).some((e) => e === "of-tpp-conformance-template: TPP clients must carry a default scope emitting fbx_client_type=open-finance-tpp"));
+});
+
+// TPP client-type guarantee (identity owns TPP onboarding): every client
+// tagged fbx.client-type=open-finance-tpp carries the named client-type
+// scope as a default scope, payments only as an optional scope, and DPoP as
+// its token binding; no client may emit fbx_client_type through its own mapper.
+const TYPE_SCOPE = "fbx-client-type-open-finance-tpp";
+const extraTpp = (input, id, registryType) => {
+  const copy = structuredClone(client(input, "of-tpp-conformance-template"));
+  copy.clientId = id;
+  input.realm.clients.push(copy);
+  input.registry.channelClients.push({ ...input.registry.channelClients.find((c) => c.clientId === "of-tpp-conformance-template"), clientId: id, type: registryType });
+  return copy;
+};
+const failsWith = (input, expected) => {
+  const errors = checkRealm(input);
+  assert.ok(errors.includes(expected), `${expected} not in ${errors.join("; ")}`);
+};
+
+test("TPP guarantee: payments is optional only, never a default scope of a TPP client", () => {
+  const input = fresh();
+  client(input, "of-tpp-conformance-template").defaultClientScopes.push("payments");
+  failsWith(input, "of-tpp-conformance-template: payments must be an optional scope of open-finance-tpp clients, never a default scope");
+});
+
+test("TPP guarantee: the client-type scope is required by name, not only by an equivalent claim", () => {
+  const input = fresh();
+  const alias = structuredClone(scope(input, TYPE_SCOPE));
+  alias.name = "fbx-tpp-alias";
+  input.realm.clientScopes.push(alias);
+  const t = client(input, "of-tpp-conformance-template");
+  t.defaultClientScopes = t.defaultClientScopes.map((s) => (s === TYPE_SCOPE ? "fbx-tpp-alias" : s));
+  failsWith(input, `of-tpp-conformance-template: open-finance-tpp clients must carry client scope ${TYPE_SCOPE} as a default scope`);
+});
+
+test("TPP guarantee: DPoP binding is required on every client tagged open-finance-tpp, whatever its registry type", () => {
+  const input = fresh();
+  const c = extraTpp(input, "of-tpp-partner", "partner");
+  delete c.attributes["fbx.tpp.token-binding"];
+  failsWith(input, "of-tpp-partner: open-finance-tpp clients must set fbx.tpp.token-binding=dpop");
+});
+
+test("TPP guarantee: a registry TPP entry must be tagged fbx.client-type=open-finance-tpp", () => {
+  const input = fresh();
+  delete client(input, "of-tpp-conformance-template").attributes["fbx.client-type"];
+  failsWith(input, "of-tpp-conformance-template: registry type open-finance-tpp requires attribute fbx.client-type=open-finance-tpp");
+});
+
+test("TPP guarantee: no client emits fbx_client_type through its own protocol mapper", () => {
+  const input = fresh();
+  client(input, "fintechbankx-web").protocolMappers.push({
+    name: "forged", protocol: "openid-connect", protocolMapper: "oidc-hardcoded-claim-mapper",
+    config: { "claim.name": "fbx_client_type", "claim.value": "open-finance-tpp", "access.token.claim": "true" }
+  });
+  failsWith(input, `fintechbankx-web: fbx_client_type may only come from a client scope (found client mapper forged)`);
+});
+
+test("TPP guarantee: the committed TPP template satisfies the shared onboarding rules", () => {
+  const input = fresh();
+  assert.deepEqual(tppClientErrors(client(input, "of-tpp-conformance-template")), []);
+});
+
+// Dynamic Client Registration is closed: the onboarding script is the only
+// runtime path for TPP clients (Keycloak 26.7.5, checked locally: an initial
+// access token could otherwise register a client tagged open-finance-tpp
+// without the client-type scope).
+const DCR = "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy";
+const dcrPolicies = (input) => input.realm.components[DCR] || [];
+
+test("DCR: a client policy rejects every registration by initial access token, registration access token or anonymously", () => {
+  const input = fresh();
+  const p = input.realm.clientPolicies.policies.find((x) => x.name === "fbx-dynamic-client-registration-closed");
+  assert.ok(p, "policy fbx-dynamic-client-registration-closed missing");
+  assert.equal(p.enabled, true);
+  assert.deepEqual(p.conditions, [{ condition: "client-updater-context", configuration: { is_negative_logic: false, "update-client-source": ["ByAnonymous", "ByInitialAccessToken", "ByRegistrationAccessToken"] } }]);
+  assert.deepEqual(p.profiles, ["fbx-reject-request"]);
+  const prof = input.realm.clientProfiles.profiles.find((x) => x.name === "fbx-reject-request");
+  assert.deepEqual(prof.executors, [{ executor: "reject-request", configuration: {} }]);
+  const off = fresh();
+  off.realm.clientPolicies.policies.find((x) => x.name === "fbx-dynamic-client-registration-closed").enabled = false;
+  failsWith(off, "client policy rejecting Dynamic Client Registration (client-updater-context ByAnonymous, ByInitialAccessToken, ByRegistrationAccessToken -> reject-request) missing");
+  const narrow = fresh();
+  narrow.realm.clientPolicies.policies.find((x) => x.name === "fbx-dynamic-client-registration-closed").conditions[0].configuration["update-client-source"] = ["ByAnonymous"];
+  failsWith(narrow, "client policy rejecting Dynamic Client Registration (client-updater-context ByAnonymous, ByInitialAccessToken, ByRegistrationAccessToken -> reject-request) missing");
+});
+
+test("DCR: registration policies are declared; anonymous closed, TPP scopes and claim mappers never allowed", () => {
+  const input = fresh();
+  const anon = dcrPolicies(input).filter((c) => c.subType === "anonymous");
+  const th = anon.find((c) => c.providerId === "trusted-hosts");
+  assert.ok(th, "anonymous trusted-hosts policy missing");
+  assert.deepEqual(th.config["trusted-hosts"] || [], []);
+  for (const c of dcrPolicies(input).filter((x) => x.providerId === "allowed-client-templates")) {
+    assert.deepEqual(c.config["allowed-client-scopes"] || [], [], `${c.subType}`);
+  }
+  const mutate = (fn, expected) => { const i = fresh(); fn(dcrPolicies(i)); failsWith(i, expected); };
+  mutate((ps) => { ps.find((c) => c.subType === "anonymous" && c.providerId === "trusted-hosts").config["trusted-hosts"] = ["tpp.example"]; }, "DCR policy Trusted Hosts (anonymous): anonymous registration must stay closed (no trusted hosts, both checks on)");
+  mutate((ps) => { const i = ps.findIndex((c) => c.subType === "anonymous" && c.providerId === "trusted-hosts"); ps.splice(i, 1); }, "DCR policy Trusted Hosts (anonymous): anonymous registration must stay closed (no trusted hosts, both checks on)");
+  mutate((ps) => { ps.find((c) => c.subType === "authenticated" && c.providerId === "allowed-client-templates").config["allowed-client-scopes"] = [TYPE_SCOPE]; }, `DCR policy Allowed Client Scopes (authenticated): must not allow ${TYPE_SCOPE}`);
+  mutate((ps) => { ps.find((c) => c.subType === "authenticated" && c.providerId === "allowed-client-templates").config["allowed-client-scopes"] = ["payments"]; }, "DCR policy Allowed Client Scopes (authenticated): must not allow payments");
+  mutate((ps) => { ps.find((c) => c.subType === "authenticated" && c.providerId === "allowed-protocol-mappers").config["allowed-protocol-mapper-types"].push("oidc-hardcoded-claim-mapper"); }, "DCR policy Allowed Protocol Mapper Types (authenticated): oidc-hardcoded-claim-mapper is not allowed (it could emit fbx_client_type)");
+});
+
+// Live drift check: runtime TPP clients are not in the realm file.
+test("live: a client tagged open-finance-tpp without the default client-type scope fails (e.g. one registered by DCR before it was closed)", async () => {
+  const input = fresh();
+  const tpl = client(input, "of-tpp-conformance-template");
+  // Shape read back from Keycloak 26.7.5 for a client registered with an
+  // initial access token: realm defaults, built-in optional scopes.
+  const dcrMade = { clientId: "of-tpp-dcr2", publicClient: false, clientAuthenticatorType: "client-jwt", protocolMappers: [],
+    attributes: { "fbx.client-type": "open-finance-tpp", "fbx.tpp.token-binding": "dpop", "dpop.bound.access.tokens": "true", "require.pushed.authorization.requests": "true" },
+    defaultClientScopes: ["web-origins", "acr", "customer-id", "roles", "profile", "basic", "email"], optionalClientScopes: ["address", "phone", "organization", "offline_access", "microprofile-jwt"] };
+  const onboarded = { ...structuredClone(tpl), clientId: "of-tpp-acme-pay", enabled: true };
+  const svc = client(input, "svc-pay-request-to-pay");
+  assert.deepEqual(realmCheck.liveTppErrors([onboarded, svc, tpl]), []);
+  assert.deepEqual(realmCheck.liveTppErrors([dcrMade]), ["of-tpp-dcr2: open-finance-tpp clients must carry client scope fbx-client-type-open-finance-tpp as a default scope"]);
+  const sneaky = { ...structuredClone(svc), defaultClientScopes: [...svc.defaultClientScopes, "fbx-client-type-open-finance-tpp"] };
+  assert.deepEqual(realmCheck.liveTppErrors([sneaky]), ["svc-pay-request-to-pay: scope fbx-client-type-open-finance-tpp on a client that is not fbx.client-type=open-finance-tpp"]);
+
+  const fsm = await import("node:fs");
+  const os = await import("node:os");
+  const dir = fsm.mkdtempSync(path.join(os.tmpdir(), "live-"));
+  const file = path.join(dir, "partial-export.json");
+  fsm.writeFileSync(file, JSON.stringify({ realm: "fintechbankx", clients: [onboarded, dcrMade] }));
+  const fromFile = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live-export", file] });
+  assert.equal(fromFile.clients.length, 2);
+  assert.equal(fromFile.errors.length, 1);
+  const { execFileSync } = await import("node:child_process");
+  assert.throws(() => execFileSync(process.execPath, [path.join(root, "scripts/ci/check-realm.mjs"), "--live-export", file], { stdio: "pipe" }), /of-tpp-dcr2: open-finance-tpp clients must carry client scope/);
+  fsm.writeFileSync(file, JSON.stringify([onboarded]));
+  assert.match(execFileSync(process.execPath, [path.join(root, "scripts/ci/check-realm.mjs"), "--live-export", file], { encoding: "utf8" }), /realm-check --live: OK \(1 clients, 1 open-finance-tpp\)/);
+  fsm.rmSync(dir, { recursive: true });
+
+  // --live: admin token, then GET /clients page by page.
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    if (String(url).endsWith("/protocol/openid-connect/token")) return new Response(JSON.stringify({ access_token: "t" }), { status: 200 });
+    const first = Number(new URL(url).searchParams.get("first"));
+    const page = first === 0 ? Array.from({ length: 100 }, (_, i) => ({ clientId: `c${i}`, attributes: {} })) : [dcrMade];
+    return new Response(JSON.stringify(page), { status: 200 });
+  };
+  const live = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: { KEYCLOAK_URL: "http://kc.test", KEYCLOAK_CLIENTID: "x", KEYCLOAK_CLIENTSECRET: "y" }, fetch });
+  assert.equal(live.clients.length, 101);
+  assert.equal(live.errors.length, 1);
+  assert.ok(urls.includes("http://kc.test/admin/realms/fintechbankx/clients?first=100&max=100"), urls.join(" "));
 });

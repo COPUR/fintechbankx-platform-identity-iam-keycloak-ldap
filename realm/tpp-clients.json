@@ -1,0 +1,4 @@
+{
+  "_comment": "Open-finance TPP clients onboarded by the realm import Job's last step (scripts/realm/onboard-tpp.mjs --tpps, bootstrap admin credential), after keycloak-config-cli and the admin-permissions step. Identity owns TPP onboarding; consent-authorization (or the TPP onboarding desk) asks for a TPP by pull request adding one spec here. A spec names the TPP only: clientId (of-tpp-<kebab>), name, redirectUris (https), jwksUri or a public jwks, paymentServices {authorised, reference}. Scopes and attributes come from the realm template of-tpp-conformance-template and cannot be set here. Empty until the first TPP is approved (Proposed).",
+  "tpps": []
+}

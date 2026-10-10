@@ -1421,7 +1421,7 @@
     {
       "clientId": "of-tpp-conformance-template",
       "name": "Open Finance TPP conformance template (disabled)",
-      "description": "Disabled reference client showing the settings every onboarded TPP client must carry. Real TPP clients are registered through the consent-authorization onboarding flow, never committed here.",
+      "description": "Disabled reference client showing the settings every onboarded TPP client must carry. Real TPP clients are onboarded at runtime by the identity platform with scripts/realm/onboard-tpp.mjs, which builds them from this template; never committed here.",
       "enabled": false,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -1964,6 +1964,122 @@
   ],
   "clientScopeMappings": {},
   "components": {
+    "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy": [
+      {
+        "name": "Allowed Client Scopes",
+        "providerId": "allowed-client-templates",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {
+          "allow-default-scopes": [
+            "true"
+          ],
+          "allowed-client-scopes": []
+        }
+      },
+      {
+        "name": "Allowed Protocol Mapper Types",
+        "providerId": "allowed-protocol-mappers",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {
+          "allowed-protocol-mapper-types": [
+            "oidc-full-name-mapper",
+            "oidc-sha256-pairwise-sub-mapper",
+            "oidc-address-mapper",
+            "oidc-usermodel-property-mapper",
+            "oidc-usermodel-attribute-mapper",
+            "saml-user-property-mapper",
+            "saml-user-attribute-mapper",
+            "saml-role-list-mapper"
+          ]
+        }
+      },
+      {
+        "name": "Allowed Registration Web Origins",
+        "providerId": "registration-web-origins",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {}
+      },
+      {
+        "name": "Allowed Client Scopes",
+        "providerId": "allowed-client-templates",
+        "subType": "authenticated",
+        "subComponents": {},
+        "config": {
+          "allow-default-scopes": [
+            "true"
+          ],
+          "allowed-client-scopes": []
+        }
+      },
+      {
+        "name": "Allowed Protocol Mapper Types",
+        "providerId": "allowed-protocol-mappers",
+        "subType": "authenticated",
+        "subComponents": {},
+        "config": {
+          "allowed-protocol-mapper-types": [
+            "oidc-full-name-mapper",
+            "oidc-sha256-pairwise-sub-mapper",
+            "oidc-address-mapper",
+            "oidc-usermodel-property-mapper",
+            "oidc-usermodel-attribute-mapper",
+            "saml-user-property-mapper",
+            "saml-user-attribute-mapper",
+            "saml-role-list-mapper"
+          ]
+        }
+      },
+      {
+        "name": "Allowed Registration Web Origins",
+        "providerId": "registration-web-origins",
+        "subType": "authenticated",
+        "subComponents": {},
+        "config": {}
+      },
+      {
+        "name": "Trusted Hosts",
+        "providerId": "trusted-hosts",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {
+          "trusted-hosts": [],
+          "host-sending-registration-request-must-match": [
+            "true"
+          ],
+          "client-uris-must-match": [
+            "true"
+          ]
+        }
+      },
+      {
+        "name": "Consent Required",
+        "providerId": "consent-required",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {}
+      },
+      {
+        "name": "Full Scope Disabled",
+        "providerId": "scope",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {}
+      },
+      {
+        "name": "Max Clients Limit",
+        "providerId": "max-clients",
+        "subType": "anonymous",
+        "subComponents": {},
+        "config": {
+          "max-clients": [
+            "200"
+          ]
+        }
+      }
+    ],
     "org.keycloak.storage.UserStorageProvider": [
       {
         "name": "fbx-directory",
@@ -2320,6 +2436,16 @@
         ]
       },
       {
+        "name": "fbx-reject-request",
+        "description": "Rejects the request (Keycloak executor reject-request). Used to close Dynamic Client Registration.",
+        "executors": [
+          {
+            "executor": "reject-request",
+            "configuration": {}
+          }
+        ]
+      },
+      {
         "name": "fbx-first-party-public",
         "description": "OAuth 2.1 public clients (web, mobile): PKCE S256, no implicit or password grant, strict redirect URIs. DPoP is not required for first-party clients yet (platform contract addendum 2026-10-08).",
         "executors": [
@@ -2426,8 +2552,29 @@
         ]
       },
       {
+        "name": "fbx-dynamic-client-registration-closed",
+        "description": "Dynamic Client Registration is closed (anonymous, initial access token, registration access token): a registered client could carry fbx.client-type=open-finance-tpp without the default client scope fbx-client-type-open-finance-tpp, and no registration policy can require a scope. TPP clients are onboarded only with scripts/realm/onboard-tpp.mjs (identity platform).",
+        "enabled": true,
+        "conditions": [
+          {
+            "condition": "client-updater-context",
+            "configuration": {
+              "is_negative_logic": false,
+              "update-client-source": [
+                "ByAnonymous",
+                "ByInitialAccessToken",
+                "ByRegistrationAccessToken"
+              ]
+            }
+          }
+        ],
+        "profiles": [
+          "fbx-reject-request"
+        ]
+      },
+      {
         "name": "fbx-open-finance-tpp-dynamic-registration",
-        "description": "TPP onboarding through Dynamic Client Registration (initial or registration access token) must already satisfy FAPI 2.0 + DPoP at registration time; the client-attributes conditions only match once the client exists.",
+        "description": "Defence in depth while DCR is closed (policy above): any registration by initial or registration access token must already satisfy FAPI 2.0 + DPoP; the client-attributes conditions only match once the client exists.",
         "enabled": true,
         "conditions": [
           {

@@ -270,7 +270,7 @@ const publicClient = (clientId, name, redirectEnv, originEnv, logoutEnv) => {
 const tppTemplate = {
   clientId: "of-tpp-conformance-template",
   name: "Open Finance TPP conformance template (disabled)",
-  description: "Disabled reference client showing the settings every onboarded TPP client must carry. Real TPP clients are registered through the consent-authorization onboarding flow, never committed here.",
+  description: "Disabled reference client showing the settings every onboarded TPP client must carry. Real TPP clients are onboarded at runtime by the identity platform with scripts/realm/onboard-tpp.mjs, which builds them from this template; never committed here.",
   enabled: false,
   protocol: "openid-connect",
   publicClient: false,
@@ -321,6 +321,12 @@ const attrMapper = (name, ldapAttr, modelAttr, mandatory) => ({
     "attribute.force.default": ["false"]
   }
 });
+
+// Keycloak's default allowed mapper types for registration (26.7.5); no
+// oidc-hardcoded-claim-mapper, so a registered client cannot emit
+// fbx_client_type itself.
+const DCR_MAPPER_TYPES = ["oidc-full-name-mapper", "oidc-sha256-pairwise-sub-mapper", "oidc-address-mapper", "oidc-usermodel-property-mapper", "oidc-usermodel-attribute-mapper", "saml-user-property-mapper", "saml-user-attribute-mapper", "saml-role-list-mapper"];
+const dcrPolicy = (name, providerId, subType, config) => ({ name, providerId, subType, subComponents: {}, config });
 
 const realm = {
   realm: "fintechbankx",
@@ -455,6 +461,24 @@ const realm = {
   clientScopeMappings: {},
 
   components: {
+    // Dynamic Client Registration policies, declared so the realm file (not
+    // the console) owns them. Same set as Keycloak creates for a new realm
+    // (read back from Keycloak 26.7.5): anonymous registration is refused by
+    // Trusted Hosts (no trusted host); with an initial access token only realm
+    // default scopes (never payments or the client-type scope) and no
+    // hardcoded-claim mapper may be registered. DCR as a whole is closed by
+    // client policy fbx-dynamic-client-registration-closed below.
+    "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy": [
+      ...["anonymous", "authenticated"].flatMap((subType) => [
+        dcrPolicy("Allowed Client Scopes", "allowed-client-templates", subType, { "allow-default-scopes": ["true"], "allowed-client-scopes": [] }),
+        dcrPolicy("Allowed Protocol Mapper Types", "allowed-protocol-mappers", subType, { "allowed-protocol-mapper-types": DCR_MAPPER_TYPES }),
+        dcrPolicy("Allowed Registration Web Origins", "registration-web-origins", subType, {})
+      ]),
+      dcrPolicy("Trusted Hosts", "trusted-hosts", "anonymous", { "trusted-hosts": [], "host-sending-registration-request-must-match": ["true"], "client-uris-must-match": ["true"] }),
+      dcrPolicy("Consent Required", "consent-required", "anonymous", {}),
+      dcrPolicy("Full Scope Disabled", "scope", "anonymous", {}),
+      dcrPolicy("Max Clients Limit", "max-clients", "anonymous", { "max-clients": ["200"] })
+    ],
     "org.keycloak.storage.UserStorageProvider": [
       {
         name: "fbx-directory",
@@ -556,6 +580,11 @@ const realm = {
         ]
       },
       {
+        name: "fbx-reject-request",
+        description: "Rejects the request (Keycloak executor reject-request). Used to close Dynamic Client Registration.",
+        executors: [{ executor: "reject-request", configuration: {} }]
+      },
+      {
         name: "fbx-first-party-public",
         description: "OAuth 2.1 public clients (web, mobile): PKCE S256, no implicit or password grant, strict redirect URIs. DPoP is not required for first-party clients yet (platform contract addendum 2026-10-08).",
         executors: [
@@ -599,8 +628,15 @@ const realm = {
         profiles: ["fapi-2-dpop-security-profile", "fbx-open-finance-tpp-client-auth"]
       },
       {
+        name: "fbx-dynamic-client-registration-closed",
+        description: "Dynamic Client Registration is closed (anonymous, initial access token, registration access token): a registered client could carry fbx.client-type=open-finance-tpp without the default client scope fbx-client-type-open-finance-tpp, and no registration policy can require a scope. TPP clients are onboarded only with scripts/realm/onboard-tpp.mjs (identity platform).",
+        enabled: true,
+        conditions: [{ condition: "client-updater-context", configuration: { "is_negative_logic": false, "update-client-source": ["ByAnonymous", "ByInitialAccessToken", "ByRegistrationAccessToken"] } }],
+        profiles: ["fbx-reject-request"]
+      },
+      {
         name: "fbx-open-finance-tpp-dynamic-registration",
-        description: "TPP onboarding through Dynamic Client Registration (initial or registration access token) must already satisfy FAPI 2.0 + DPoP at registration time; the client-attributes conditions only match once the client exists.",
+        description: "Defence in depth while DCR is closed (policy above): any registration by initial or registration access token must already satisfy FAPI 2.0 + DPoP; the client-attributes conditions only match once the client exists.",
         enabled: true,
         conditions: [{ condition: "client-updater-context", configuration: { "is_negative_logic": false, "update-client-source": ["ByInitialAccessToken", "ByRegistrationAccessToken"] } }],
         profiles: ["fapi-2-dpop-security-profile", "fbx-open-finance-tpp-client-auth"]

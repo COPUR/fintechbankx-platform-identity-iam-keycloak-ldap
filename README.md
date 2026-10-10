@@ -7,6 +7,7 @@ The deployable identity platform of FinTechBankX: Keycloak realm `fintechbankx` 
 | Area | Path | Doc |
 |---|---|---|
 | Realm as code (roles, groups, 15 service clients with audience mappers, customer web and mobile, staff web PKCE clients (one user type each), FAPI 2.0 TPP policies, LDAP federation, token lifetimes, brute force, events) | `realm/` | [REALM_AS_CODE](docs/identity/REALM_AS_CODE.md) |
+| Open-finance TPP onboarding (identity-owned; Dynamic Client Registration closed): TPP list, onboarding script run by the realm import Job, live drift check, token drill | `realm/tpp-clients.json`, `scripts/realm/onboard-tpp.mjs` | [REALM_AS_CODE](docs/identity/REALM_AS_CODE.md) |
 | Keycloak 26.7.5 on EKS via the Keycloak Operator, kustomize base + dev/staging/prod overlays, realm import Job | `deploy/kustomize/` | [KEYCLOAK_ON_EKS](docs/identity/KEYCLOAK_ON_EKS.md) |
 | Aurora PostgreSQL (terraform-modules `aurora-postgresql`), Secrets Manager containers, KMS | `deploy/terraform/` | [KEYCLOAK_ON_EKS](docs/identity/KEYCLOAK_ON_EKS.md) |
 | OpenLDAP for dev/staging, corporate directory (AWS Managed Microsoft AD) for prod | `deploy/kustomize/components/openldap/` | [DIRECTORY_FEDERATION](docs/identity/DIRECTORY_FEDERATION.md) |
@@ -19,6 +20,7 @@ The deployable identity platform of FinTechBankX: Keycloak realm `fintechbankx` 
 - Validate `aud` contains your service id; map `realm_access.roles` (`customer`, `banker`, `loan_officer`, `admin`, `service`, `auditor`, `compliance_officer`) to `ROLE_*`.
 - Your client id is your service id; read the credential with an ExternalSecret from `<env>/<service-slug>/oidc-client` (ClusterSecretStore `aws-secrets-manager`).
 - To add a client or an audience, change `realm/service-clients.json` and run `node scripts/realm/render-realm.mjs` (PR to this repository).
+- To onboard an open-finance TPP, add its spec to `realm/tpp-clients.json` (PR to this repository); the realm import Job creates the client with the `fbx_client_type` and, if authorised, `payments` scopes.
 
 ### Local checks
 

@@ -21,3 +21,12 @@ configMapGenerator:
       labels:
         app.kubernetes.io/name: keycloak-realm-import
         app.kubernetes.io/part-of: fintechbankx-identity
+  # Open-finance TPP clients, onboarded by the Job's last step
+  # (scripts/realm/onboard-tpp.mjs); not a realm file for keycloak-config-cli.
+  - name: fintechbankx-realm-tpp-clients
+    files:
+      - tpp-clients.json
+    options:
+      labels:
+        app.kubernetes.io/name: keycloak-realm-import
+        app.kubernetes.io/part-of: fintechbankx-identity

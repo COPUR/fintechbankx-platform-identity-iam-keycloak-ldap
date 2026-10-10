@@ -9,7 +9,9 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import YAML from "yaml";
+import { createRequire } from "node:module";
+import { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, CLIENT_TYPE_CLAIM, TPP_CLIENT_TYPE_SCOPE, DCR_SOURCES, DCR_POLICY_TYPE, tppClientErrors, clientTypeMappers, liveTppErrors, parseList, clientsOf, fetchClients } from "../realm/tpp-rules.mjs";
+import { fetchAdminToken } from "../realm/apply-admin-permissions.mjs";
 
 export const CONTRACT_ROLES = ["customer", "banker", "loan_officer", "admin", "service", "auditor", "compliance_officer"];
 export const STAFF_ROLE_GROUPS = {
@@ -20,9 +22,7 @@ export const STAFF_ROLE_GROUPS = {
   "fbx-compliance-officer": "compliance_officer"
 };
 const CUSTOMER_ID_SCOPE = "customer-id";
-export const PAYMENTS_SCOPE = "payments";
-export const TPP_CLIENT_TYPE = "open-finance-tpp";
-export const CLIENT_TYPE_CLAIM = "fbx_client_type";
+export { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, CLIENT_TYPE_CLAIM, TPP_CLIENT_TYPE_SCOPE, tppClientErrors, liveTppErrors } from "../realm/tpp-rules.mjs";
 const PLACEHOLDER = /^\$\(env:[A-Z0-9_]+\)$/;
 const SECRET_KEY = /(secret|credential|password|passwd|private.?key)/i;
 
@@ -277,7 +277,15 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     if (type === TPP_CLIENT_TYPE) {
       if (!(c.optionalClientScopes || []).includes(PAYMENTS_SCOPE)) err(`${c.clientId}: TPP clients must carry the ${PAYMENTS_SCOPE} scope (optional)`);
       if (!typeScopes.some((t) => t.value === type && (c.defaultClientScopes || []).includes(t.scope))) err(`${c.clientId}: TPP clients must carry a default scope emitting ${CLIENT_TYPE_CLAIM}=${type}`);
+      for (const m of tppClientErrors(c)) err(`${c.clientId}: ${m}`);
+    } else {
+      for (const m of clientTypeMappers(c)) err(`${c.clientId}: ${CLIENT_TYPE_CLAIM} may only come from a client scope (found client mapper ${m.name})`);
     }
+  }
+  if (!typeScopes.some((t) => t.scope === TPP_CLIENT_TYPE_SCOPE && t.value === TPP_CLIENT_TYPE)) err(`client scope ${TPP_CLIENT_TYPE_SCOPE} must emit ${CLIENT_TYPE_CLAIM}=${TPP_CLIENT_TYPE}`);
+  for (const entry of registry.channelClients || []) {
+    const c = clients.get(entry.clientId);
+    if (c && entry.type === TPP_CLIENT_TYPE && c.attributes?.["fbx.client-type"] !== TPP_CLIENT_TYPE) err(`${c.clientId}: registry type ${TPP_CLIENT_TYPE} requires attribute fbx.client-type=${TPP_CLIENT_TYPE}`);
   }
 
   // FAPI 2.0 policies for open-finance TPPs.
@@ -303,6 +311,50 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     for (const e of prof.executors || []) {
       if ((e.configuration?.["allowed-client-authenticators"] || []).includes("client-x509")) err(`client profile ${prof.name}: client-x509 is not allowed`);
       if (e.configuration?.["tls-client-certificate-bound-access-tokens"] === "true" || e.executor === "holder-of-key-enforcer") err(`client profile ${prof.name}: certificate-bound tokens are not supported`);
+    }
+  }
+
+  // Dynamic Client Registration closed: an enabled client policy whose only
+  // condition is the DCR updater context (all three sources) applies a
+  // profile with the reject-request executor.
+  const rejectProfiles = new Set((realm.clientProfiles?.profiles || [])
+    .filter((p) => (p.executors || []).some((x) => x.executor === "reject-request"))
+    .map((p) => p.name));
+  const closesDcr = policies.some((p) => {
+    if (p.enabled === false || (p.conditions || []).length !== 1) return false;
+    const [cond] = p.conditions;
+    const sources = parseList(cond.configuration?.["update-client-source"]);
+    return cond.condition === "client-updater-context"
+      && cond.configuration?.is_negative_logic !== true
+      && DCR_SOURCES.every((s) => sources.includes(s))
+      && (p.profiles || []).some((n) => rejectProfiles.has(n));
+  });
+  if (!closesDcr) err(`client policy rejecting Dynamic Client Registration (client-updater-context ${DCR_SOURCES.join(", ")} -> reject-request) missing`);
+
+  // Registration policies declared in the realm file (defence in depth if the
+  // client policy above is ever switched off): anonymous registration closed,
+  // neither TPP scope registrable, no mapper type that could emit the claim.
+  const dcr = realm.components?.[DCR_POLICY_TYPE] || [];
+  for (const subType of ["anonymous", "authenticated"]) {
+    for (const [providerId, name] of [["allowed-client-templates", "Allowed Client Scopes"], ["allowed-protocol-mappers", "Allowed Protocol Mapper Types"]]) {
+      if (!dcr.some((c) => c.subType === subType && c.providerId === providerId)) err(`DCR policy ${name} (${subType}) missing`);
+    }
+  }
+  const th = dcr.find((c) => c.subType === "anonymous" && c.providerId === "trusted-hosts");
+  if (!th || parseList(th.config?.["trusted-hosts"]).length > 0
+    || parseList(th.config?.["host-sending-registration-request-must-match"])[0] !== "true"
+    || parseList(th.config?.["client-uris-must-match"])[0] !== "true") {
+    err("DCR policy Trusted Hosts (anonymous): anonymous registration must stay closed (no trusted hosts, both checks on)");
+  }
+  for (const c of dcr) {
+    const label = `DCR policy ${c.name} (${c.subType})`;
+    if (c.providerId === "allowed-client-templates") {
+      for (const s of parseList(c.config?.["allowed-client-scopes"])) {
+        if (s === PAYMENTS_SCOPE || typeScopes.some((t) => t.scope === s)) err(`${label}: must not allow ${s}`);
+      }
+    }
+    if (c.providerId === "allowed-protocol-mappers" && parseList(c.config?.["allowed-protocol-mapper-types"]).includes("oidc-hardcoded-claim-mapper")) {
+      err(`${label}: oidc-hardcoded-claim-mapper is not allowed (it could emit ${CLIENT_TYPE_CLAIM})`);
     }
   }
 
@@ -352,6 +404,8 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
 }
 
 export function loadFromRepo(root) {
+  // yaml is loaded here only, so --live runs without node_modules.
+  const YAML = createRequire(import.meta.url)("yaml");
   const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
   const realm = JSON.parse(read("realm/fintechbankx-realm.json"));
   const registry = JSON.parse(read("realm/service-clients.json"));
@@ -363,8 +417,40 @@ export function loadFromRepo(root) {
   return { realm, registry, adminPermissions, importEnv, importSecretKeys, importSecretRefs };
 }
 
+// Live drift check (runtime TPP clients are not in the realm file):
+//   --live-export <file>  partial export ({clients}) or GET /clients output
+//   --live                reads GET /admin/realms/<realm>/clients from
+//                         KEYCLOAK_URL with the KEYCLOAK_* credential
+//                         variables of apply-admin-permissions.mjs
+//   --realm <name>        realm for --live (default fintechbankx)
+export async function checkLive({ argv = process.argv, env = process.env, fetch = globalThis.fetch } = {}) {
+  const arg = (n) => { const i = argv.indexOf(n); return i > 0 ? argv[i + 1] : undefined; };
+  let clients;
+  if (arg("--live-export")) {
+    clients = clientsOf(JSON.parse(fs.readFileSync(arg("--live-export"), "utf8")));
+  } else {
+    const token = await fetchAdminToken({ fetch, env });
+    clients = await fetchClients({ fetch, baseUrl: env.KEYCLOAK_URL, token, realm: arg("--realm") || "fintechbankx" });
+  }
+  return { clients, errors: liveTppErrors(clients) };
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+if (isMain && (process.argv.includes("--live") || process.argv.includes("--live-export"))) {
+  try {
+    const { clients, errors } = await checkLive();
+    const tpps = clients.filter((c) => c.attributes?.["fbx.client-type"] === TPP_CLIENT_TYPE).length;
+    for (const e of errors) console.error(`realm-check --live: ${e}`);
+    if (errors.length) {
+      console.error(`realm-check --live: FAILED (${errors.length} problem(s), ${clients.length} clients, ${tpps} open-finance-tpp)`);
+      process.exit(1);
+    }
+    console.log(`realm-check --live: OK (${clients.length} clients, ${tpps} open-finance-tpp)`);
+  } catch (e) {
+    console.error(`realm-check --live: FAILED: ${e.message}`);
+    process.exit(1);
+  }
+} else if (isMain) {
   const i = process.argv.indexOf("--root");
   const root = i > 0 ? process.argv[i + 1] : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
   const input = loadFromRepo(root);
