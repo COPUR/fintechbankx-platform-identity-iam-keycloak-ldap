@@ -11,9 +11,11 @@
 # realm/admin-permissions.json, which keycloak-config-cli 6.5.1 cannot import
 # (it skips the system-managed admin-permissions client), then container
 # tpp-onboarding (scripts/realm/onboard-tpp.mjs) creates or repairs the TPP
-# clients of realm/tpp-clients.json and fails the Job when any client of the
-# running realm tagged fbx.client-type=open-finance-tpp lacks the default
-# client-type scope (--verify-live). All use the same bootstrap admin client;
+# clients of realm/tpp-clients.json (enabled flag from each spec's status:
+# suspended disables, an operator-disabled active client stays disabled) and
+# fails the Job when any client of the running realm tagged
+# fbx.client-type=open-finance-tpp lacks the default client-type scope, is
+# enabled but not listed, or is enabled but listed suspended (--verify-live). All use the same bootstrap admin client;
 # the Node steps receive only that credential.
 #
 # Re-run on every change: Argo CD runs it as a PostSync hook; with plain

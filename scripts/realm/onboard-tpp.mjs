@@ -12,7 +12,21 @@
 //   - client scope payments as an optional scope only when the TPP is
 //     authorised for payment services (with the authorisation reference).
 // The spec names the TPP only (client id, name, redirect URIs, JWKS, payment
-// authorisation); it cannot set scopes or attributes.
+// authorisation, status); it cannot set scopes or attributes.
+//
+// status (active | suspended, default active) decides the enabled flag, never
+// the template:
+//   - suspended: the client is disabled, its notBefore is set to now on the
+//     transition (refresh and offline tokens issued before are rejected), and
+//     every user holding a session or offline token of the client has it
+//     revoked (DELETE /users/{id}/consents/{clientId}: consent, offline token
+//     and that client's sessions only; the user's other sessions are kept).
+//   - active: an existing client keeps the enabled flag Keycloak holds. A
+//     client an operator disabled stays disabled and is reported ("listed
+//     active but disabled in Keycloak"); only the create path enables, after
+//     verification.
+// POST /clients/{id}/push-revocation is not used: it only pushes the client's
+// notBefore to the client's admin URL, which TPP clients do not have.
 //
 // Safe to re-run: a client is looked up by clientId and updated in place; its
 // default and optional scopes are reconciled to the exact lists; nothing else
@@ -21,12 +35,17 @@
 // another type. A new client is created disabled, updated once (so Keycloak's
 // client policies for open-finance-tpp, which only match an existing client,
 // check it), given its scopes, verified, and only then enabled; if any step
-// fails it is deleted again.
+// fails it is deleted again (a spec listed suspended is created and left
+// disabled).
 //
 // usage: node onboard-tpp.mjs (--tpp <spec.json> | --tpps <list.json>) [--realm <realm.json>] [--dry-run] [--verify-live]
 //   list.json: {"tpps": [spec, ...]}
 //   --verify-live: afterwards, fail when any client of the realm breaks the
-//                  TPP rules (same check as check-realm.mjs --live)
+//                  TPP rules (same check as check-realm.mjs --live); with
+//                  --tpps (the complete list) also fail when an enabled
+//                  open-finance-tpp client is not listed or a listed-suspended
+//                  client is enabled, and warn when a listed-active client is
+//                  disabled
 // env: KEYCLOAK_URL and the KEYCLOAK_* credential variables of
 //      apply-admin-permissions.mjs (the realm import Job's bootstrap admin client).
 import fs from "node:fs";
@@ -37,7 +56,8 @@ import { fetchAdminToken } from "./apply-admin-permissions.mjs";
 import { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, TPP_CLIENT_TYPE_SCOPE, tppClientErrors, liveTppErrors, fetchClients } from "./tpp-rules.mjs";
 
 export const TEMPLATE_CLIENT_ID = "of-tpp-conformance-template";
-const SPEC_FIELDS = ["clientId", "name", "redirectUris", "jwksUri", "jwks", "paymentServices"];
+const SPEC_FIELDS = ["clientId", "name", "redirectUris", "jwksUri", "jwks", "paymentServices", "status"];
+export const TPP_STATUSES = ["active", "suspended"];
 const CLIENT_ID = /^of-tpp-[a-z0-9]+(-[a-z0-9]+)*$/;
 const PRIVATE_JWK_MEMBERS = ["d", "p", "q", "dp", "dq", "qi", "k", "oth"];
 const httpsUrl = (u) => {
@@ -73,10 +93,13 @@ export function validateTppSpec(spec) {
     if (typeof pay !== "object" || typeof pay.authorised !== "boolean") e("paymentServices.authorised must be true or false");
     else if (pay.authorised && !(typeof pay.reference === "string" && pay.reference.trim())) e("paymentServices.reference is required when payment services are authorised");
   }
+  if (spec?.status !== undefined && !TPP_STATUSES.includes(spec.status)) e("status must be active or suspended (default active)");
   return errors;
 }
 
 export const paymentsAuthorisedOf = (spec) => spec?.paymentServices?.authorised === true;
+export const statusOf = (spec) => spec?.status ?? "active";
+const disabledWarning = (id) => `${id}: listed active but disabled in Keycloak; leaving disabled — set status in Git`;
 
 // Client representation for one TPP, from the realm template.
 export function buildTppClient({ template, spec }) {
@@ -88,7 +111,7 @@ export function buildTppClient({ template, spec }) {
   c.clientId = spec.clientId;
   c.name = spec.name;
   c.description = `Open-finance TPP client, onboarded by the identity platform (scripts/realm/onboard-tpp.mjs) from ${TEMPLATE_CLIENT_ID}. Payment services: ${payments ? `authorised (${spec.paymentServices.reference})` : "not authorised"}.`;
-  c.enabled = true;
+  c.enabled = statusOf(spec) === "active";
   c.redirectUris = [...spec.redirectUris];
   const a = { ...c.attributes };
   delete a["jwks.url"];
@@ -121,8 +144,22 @@ function adminApi({ fetch, baseUrl, token, realm }) {
   return { R, call };
 }
 
-export async function onboardTpp({ fetch = globalThis.fetch, baseUrl, token, realm, client, paymentsAuthorised, log = () => {} }) {
+// Every user holding a session (online or offline) of the client, paged.
+async function sessionUsers(call, R, uuid, pageSize = 100) {
+  const users = new Set();
+  for (const kind of ["user-sessions", "offline-sessions"]) {
+    for (let first = 0; ; first += pageSize) {
+      const page = (await call("GET", `${R}/clients/${uuid}/${kind}?first=${first}&max=${pageSize}`)).json || [];
+      for (const s of page) if (s.userId) users.add(s.userId);
+      if (page.length < pageSize) break;
+    }
+  }
+  return [...users].sort();
+}
+
+export async function onboardTpp({ fetch = globalThis.fetch, baseUrl, token, realm, client, paymentsAuthorised, status = "active", log = () => {}, warn = log }) {
   const id = client.clientId;
+  if (!TPP_STATUSES.includes(status)) throw new Error(`refusing to onboard ${id}: status must be active or suspended`);
   const refused = tppClientErrors(client, { paymentsAuthorised });
   if (refused.length) throw new Error(`refusing to onboard ${id}: ${refused.join("; ")}`);
   const { R, call } = adminApi({ fetch, baseUrl, token, realm });
@@ -139,9 +176,31 @@ export async function onboardTpp({ fetch = globalThis.fetch, baseUrl, token, rea
 
   let uuid = existing?.id;
   const action = existing ? "updated" : "created";
+  const suspended = status === "suspended";
+  // Enabled flag of an existing client: suspended disables it; active keeps
+  // what Keycloak holds (an operator's disable is honoured, and flagged).
+  const enabled = existing ? !suspended && existing.enabled !== false : !suspended;
+  const revokedUsers = [];
   try {
     if (existing) {
-      await call("PUT", `${R}/clients/${uuid}`, { ...client, id: uuid });
+      const update = { ...client, id: uuid, enabled };
+      // Tokens issued before the suspension are rejected from now on; set once,
+      // on the transition, so a re-run does not move it.
+      if (suspended && existing.enabled !== false) update.notBefore = Math.floor(Date.now() / 1000);
+      await call("PUT", `${R}/clients/${uuid}`, update);
+      if (!suspended && existing.enabled === false) warn(disabledWarning(id));
+      if (suspended) {
+        for (const userId of await sessionUsers(call, R, uuid)) {
+          try {
+            await call("DELETE", `${R}/users/${encodeURIComponent(userId)}/consents/${encodeURIComponent(id)}`);
+            revokedUsers.push(userId);
+          } catch (e) {
+            // 404: the user holds neither a consent nor an offline token of the
+            // client; the disabled client and notBefore already stop its tokens.
+            if (!/ -> 404\b/.test(e.message)) throw e;
+          }
+        }
+      }
     } else {
       const created = await call("POST", `${R}/clients`, { ...client, enabled: false });
       uuid = created.location?.split("/").pop()
@@ -175,9 +234,10 @@ export async function onboardTpp({ fetch = globalThis.fetch, baseUrl, token, rea
     const verified = { ...stored, defaultClientScopes: await names("default"), optionalClientScopes: await names("optional") };
     const drift = tppClientErrors(verified, { paymentsAuthorised });
     if (drift.length) throw new Error(`verification failed: ${drift.join("; ")}`);
-    if (!existing) await call("PUT", `${R}/clients/${uuid}`, { ...client, id: uuid, enabled: true });
-    log(`${id}: ${action}${scopeChanges.length ? ` (${scopeChanges.join(", ")})` : ""}`);
-    return { clientId: id, id: uuid, action, scopeChanges };
+    if (!existing && enabled) await call("PUT", `${R}/clients/${uuid}`, { ...client, id: uuid, enabled: true });
+    const notes = [...scopeChanges, ...(suspended ? [`suspended: disabled${revokedUsers.length ? `, sessions of ${revokedUsers.length} user(s) revoked` : ""}`] : [])];
+    log(`${id}: ${action}${notes.length ? ` (${notes.join(", ")})` : ""}`);
+    return { clientId: id, id: uuid, action, status, enabled, scopeChanges, revokedUsers };
   } catch (e) {
     if (!existing && uuid) {
       await call("DELETE", `${R}/clients/${uuid}`).catch(() => {});
@@ -185,6 +245,26 @@ export async function onboardTpp({ fetch = globalThis.fetch, baseUrl, token, rea
     }
     throw new Error(`${id}: ${e.message}`);
   }
+}
+
+// Listing check for --verify-live against the complete list (realm/tpp-clients.json).
+// errors: an enabled open-finance-tpp client that is not listed (created
+// outside Git, or removed from the list without being suspended first), a
+// listed-suspended client that is enabled. warnings: a listed-active client
+// that is disabled (an operator's disable is honoured, but Git should say so).
+export function tppListingFindings(clients, specs) {
+  const listed = new Map((specs || []).map((s) => [s.clientId, statusOf(s)]));
+  const errors = [];
+  const warnings = [];
+  for (const c of clients || []) {
+    if (c.attributes?.["fbx.client-type"] !== TPP_CLIENT_TYPE) continue;
+    const status = listed.get(c.clientId);
+    const enabled = c.enabled !== false;
+    if (!status && enabled) errors.push(`${c.clientId}: enabled open-finance-tpp client not listed in realm/tpp-clients.json (add it, or disable and off-board it)`);
+    else if (status === "suspended" && enabled) errors.push(`${c.clientId}: listed suspended in realm/tpp-clients.json but enabled in Keycloak`);
+    else if (status === "active" && !enabled) warnings.push(disabledWarning(c.clientId));
+  }
+  return { errors, warnings };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -213,7 +293,7 @@ if (isMain) {
     const failures = [];
     for (const { spec, client } of built) {
       try {
-        await onboardTpp({ baseUrl: process.env.KEYCLOAK_URL, token, realm: realm.realm, client, paymentsAuthorised: paymentsAuthorisedOf(spec), log: out });
+        await onboardTpp({ baseUrl: process.env.KEYCLOAK_URL, token, realm: realm.realm, client, paymentsAuthorised: paymentsAuthorisedOf(spec), status: statusOf(spec), log: out, warn: (m) => console.warn(`onboard-tpp: WARNING ${m}`) });
       } catch (e) {
         failures.push(e.message);
         console.error(`onboard-tpp: ${e.message}`);
@@ -222,6 +302,12 @@ if (isMain) {
     if (process.argv.includes("--verify-live")) {
       const clients = await fetchClients({ baseUrl: process.env.KEYCLOAK_URL, token, realm: realm.realm });
       const errors = liveTppErrors(clients);
+      // The listing check needs the complete list, so only with --tpps.
+      if (arg("--tpps")) {
+        const listing = tppListingFindings(clients, specs);
+        errors.push(...listing.errors);
+        for (const w of listing.warnings) console.warn(`onboard-tpp: live: WARNING ${w}`);
+      }
       for (const e of errors) console.error(`onboard-tpp: live: ${e}`);
       if (errors.length) failures.push(`${errors.length} live problem(s)`);
       else out(`live check OK (${clients.length} clients, ${clients.filter((c) => c.attributes?.["fbx.client-type"] === TPP_CLIENT_TYPE).length} open-finance-tpp)`);

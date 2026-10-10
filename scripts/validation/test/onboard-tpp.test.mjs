@@ -25,7 +25,7 @@ const spec = (over = {}) => ({
 // Keycloak gives a new client the realm default scopes plus the built-in
 // optional ones when the request does not name them; the fake does the same,
 // so the script has to reconcile the lists itself.
-function fakeKeycloak({ clients = [], scopes = ["basic", "acr", "roles", "web-origins", "profile", "email", "customer-id", "offline_access", "address", "phone", "payments", TYPE_SCOPE], rejectUpdate = null } = {}) {
+function fakeKeycloak({ clients = [], scopes = ["basic", "acr", "roles", "web-origins", "profile", "email", "customer-id", "offline_access", "address", "phone", "payments", TYPE_SCOPE], rejectUpdate = null, sessions = {}, noConsent = [] } = {}) {
   const scopeIds = new Map(scopes.map((s) => [s, `scope-${s}`]));
   const scopeName = new Map([...scopeIds].map(([n, id]) => [id, n]));
   const state = new Map();
@@ -58,6 +58,21 @@ function fakeKeycloak({ clients = [], scopes = ["basic", "acr", "roles", "web-or
       }
       if (method === "DELETE") { state.delete(m[1]); return json(204); }
     }
+    // Sessions of a client (sessions: {clientUuid: {online: [userId], offline: [userId]}})
+    // and per-client consent revocation (DELETE /users/{id}/consents/{clientId}).
+    if (method === "GET" && (m = p.match(/^\/clients\/([^/]+)\/(user|offline)-sessions$/))) {
+      const first = Number(u.searchParams.get("first") || 0);
+      const max = Number(u.searchParams.get("max") || 100);
+      const users = sessions[m[1]]?.[m[2] === "user" ? "online" : "offline"] || [];
+      return json(200, users.slice(first, first + max).map((userId, i) => ({ id: `s-${m[2]}-${first + i}`, userId })));
+    }
+    if (method === "DELETE" && (m = p.match(/^\/users\/([^/]+)\/consents\/([^/]+)$/))) {
+      const c = [...state.values()].find((x) => x.clientId === decodeURIComponent(m[2]));
+      const s = c && sessions[c.id];
+      if (!s || noConsent.includes(m[1]) || ![...(s.online || []), ...(s.offline || [])].includes(m[1])) return json(404, { error: "Consent nor offline token not found" });
+      for (const k of ["online", "offline"]) s[k] = (s[k] || []).filter((x) => x !== m[1]);
+      return json(204);
+    }
     if ((m = p.match(/^\/clients\/([^/]+)\/(default|optional)-client-scopes(?:\/([^/]+))?$/))) {
       const c = state.get(m[1]);
       const key = m[2] === "default" ? "defaultClientScopes" : "optionalClientScopes";
@@ -71,7 +86,7 @@ function fakeKeycloak({ clients = [], scopes = ["basic", "acr", "roles", "web-or
   return { fetch, calls, state, writes: () => calls.filter((c) => c.method !== "GET") };
 }
 
-const run = (kc, s = spec()) => onboarding.onboardTpp({ fetch: kc.fetch, baseUrl: BASE, token: "t0k", realm: "fintechbankx", client: onboarding.buildTppClient({ template, spec: s }), paymentsAuthorised: s.paymentServices?.authorised === true });
+const run = (kc, s = spec(), extra = {}) => onboarding.onboardTpp({ fetch: kc.fetch, baseUrl: BASE, token: "t0k", realm: "fintechbankx", client: onboarding.buildTppClient({ template, spec: s }), paymentsAuthorised: s.paymentServices?.authorised === true, status: onboarding.statusOf(s), ...extra });
 
 test("spec validation: identity decides scopes and attributes, the spec only names the TPP", () => {
   assert.deepEqual(onboarding.validateTppSpec(spec()), []);
@@ -89,6 +104,12 @@ test("spec validation: identity decides scopes and attributes, the spec only nam
   bad({ paymentServices: { authorised: true } }, "paymentServices.reference is required when payment services are authorised");
   bad({ defaultClientScopes: ["payments"] }, "unknown field defaultClientScopes (scopes and attributes are set by identity, not by the spec)");
   bad({ attributes: { "fbx.client-type": "service" } }, "unknown field attributes (scopes and attributes are set by identity, not by the spec)");
+  bad({ status: "disabled" }, "status must be active or suspended (default active)");
+  bad({ status: true }, "status must be active or suspended (default active)");
+  assert.deepEqual(onboarding.validateTppSpec(spec({ status: "active" })), []);
+  assert.deepEqual(onboarding.validateTppSpec(spec({ status: "suspended" })), []);
+  assert.equal(onboarding.statusOf(spec()), "active");
+  assert.equal(onboarding.statusOf(spec({ status: "suspended" })), "suspended");
 });
 
 test("the client built from the realm template carries the client type, DPoP and the default client-type scope", () => {
@@ -231,4 +252,81 @@ test("committed TPP list: every spec is valid, built from the template and liste
     const c = onboarding.buildTppClient({ template, spec: s });
     assert.ok(c.defaultClientScopes.includes(TYPE_SCOPE));
   }
+});
+
+test("an existing client an operator disabled stays disabled on the next sync, with a warning (never silently re-enabled)", async () => {
+  const kc = fakeKeycloak();
+  await run(kc);
+  assert.equal(kc.state.get("uuid-1").enabled, true);
+  kc.state.get("uuid-1").enabled = false; // operator disables it in the admin console
+  const warnings = [];
+  const before = kc.calls.length;
+  const again = await run(kc, spec(), { warn: (m) => warnings.push(m) });
+  assert.equal(kc.state.get("uuid-1").enabled, false);
+  assert.ok(kc.calls.slice(before).filter((c) => c.method === "PUT" && c.url === `${R}/clients/uuid-1`).every((c) => c.body.enabled === false));
+  assert.deepEqual(warnings, ["of-tpp-acme-pay: listed active but disabled in Keycloak; leaving disabled — set status in Git"]);
+  assert.equal(again.enabled, false);
+  // An enabled, active client stays enabled and no session is touched.
+  kc.state.get("uuid-1").enabled = true;
+  const ok = await run(kc);
+  assert.equal(kc.state.get("uuid-1").enabled, true);
+  assert.equal(ok.enabled, true);
+  assert.ok(!kc.calls.some((c) => c.url.includes("/consents/") || c.url.includes("-sessions")));
+});
+
+test("status suspended disables an enabled client, sets notBefore and revokes its user and offline sessions", async () => {
+  const kc = fakeKeycloak({ sessions: { "uuid-1": { online: ["user-a", "user-b", "user-n"], offline: ["user-b", "user-c"] } }, noConsent: ["user-n"] });
+  await run(kc);
+  assert.equal(kc.state.get("uuid-1").enabled, true);
+  const before = kc.calls.length;
+  const t0 = Math.floor(Date.now() / 1000);
+  const res = await run(kc, spec({ status: "suspended" }));
+  const c = kc.state.get("uuid-1");
+  assert.equal(c.enabled, false);
+  assert.ok(Number.isInteger(c.notBefore) && c.notBefore >= t0, `notBefore ${c.notBefore}`);
+  const writes = kc.calls.slice(before).filter((x) => x.method !== "GET").map((x) => `${x.method} ${x.url.replace(R, "")}`);
+  // Disabled before any session is revoked, so no new token is issued meanwhile.
+  assert.equal(writes[0], "PUT /clients/uuid-1");
+  assert.deepEqual(writes.filter((w) => w.includes("/consents/")).sort(), ["DELETE /users/user-a/consents/of-tpp-acme-pay", "DELETE /users/user-b/consents/of-tpp-acme-pay", "DELETE /users/user-c/consents/of-tpp-acme-pay", "DELETE /users/user-n/consents/of-tpp-acme-pay"]);
+  // user-n has a session but neither consent nor offline token (Keycloak 404): tolerated, not counted.
+  assert.deepEqual(res.revokedUsers, ["user-a", "user-b", "user-c"]);
+  assert.equal(res.enabled, false);
+  // Idempotent while suspended: no session left, notBefore not moved again.
+  const nb = c.notBefore;
+  const again = await run(kc, spec({ status: "suspended" }));
+  assert.equal(kc.state.get("uuid-1").enabled, false);
+  assert.equal(kc.state.get("uuid-1").notBefore, nb);
+  assert.deepEqual(again.revokedUsers, []);
+  // Any other admin API failure during revocation fails the run.
+  const bad = fakeKeycloak({ sessions: { "uuid-1": { online: ["user-a"] } } });
+  await run(bad);
+  const failing = async (url, init = {}) => (init.method === "DELETE" && url.includes("/consents/") ? new Response("{}", { status: 500 }) : bad.fetch(url, init));
+  await assert.rejects(onboarding.onboardTpp({ fetch: failing, baseUrl: BASE, token: "t", realm: "fintechbankx", client: onboarding.buildTppClient({ template, spec: spec({ status: "suspended" }) }), paymentsAuthorised: true, status: "suspended" }), /-> 500/);
+});
+
+test("a TPP listed suspended before it exists is created and left disabled", async () => {
+  const kc = fakeKeycloak();
+  const res = await run(kc, spec({ status: "suspended" }));
+  assert.equal(res.action, "created");
+  assert.equal(kc.state.get("uuid-1").enabled, false);
+  assert.ok(kc.writes().every((w) => w.body === undefined || w.body.enabled === false));
+});
+
+test("verify-live listing check: flags enabled TPP clients not in the list and listed-suspended clients that are enabled", () => {
+  const tpp = (clientId, enabled) => ({ clientId, enabled, attributes: { "fbx.client-type": "open-finance-tpp" } });
+  const clients = [
+    tpp("of-tpp-acme-pay", true), // listed active, enabled: fine
+    tpp("of-tpp-rogue", true), // not listed, enabled: error
+    tpp("of-tpp-gone", false), // not listed, disabled (off-boarded): fine
+    tpp("of-tpp-paused", true), // listed suspended, enabled: error
+    tpp("of-tpp-held", false), // listed active, disabled by an operator: warning
+    { clientId: "svc-pay-request-to-pay", enabled: true, attributes: { "fbx.client-type": "service" } }
+  ];
+  const specs = [spec(), spec({ clientId: "of-tpp-paused", status: "suspended" }), spec({ clientId: "of-tpp-held" })];
+  const { errors, warnings } = onboarding.tppListingFindings(clients, specs);
+  assert.deepEqual(errors, [
+    "of-tpp-rogue: enabled open-finance-tpp client not listed in realm/tpp-clients.json (add it, or disable and off-board it)",
+    "of-tpp-paused: listed suspended in realm/tpp-clients.json but enabled in Keycloak"
+  ]);
+  assert.deepEqual(warnings, ["of-tpp-held: listed active but disabled in Keycloak; leaving disabled — set status in Git"]);
 });
