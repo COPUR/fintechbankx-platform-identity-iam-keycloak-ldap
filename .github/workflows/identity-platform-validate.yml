@@ -132,7 +132,7 @@ jobs:
           # open platform PR #11. Until that merges, validate against that PR's
           # head commit (pinned, not the moving branch); set back to main (or a
           # release tag) in the change that merges terraform-modules #11.
-          TF_MODULES_REF: f8202f0d4a543486e7d327c6726f478e9655257c
+          TF_MODULES_REF: 8b8b2206d280f5c1637f4b69854dea117de18f90
         run: |
           set -euo pipefail
           if [ "$TF_MODULES_REF" != "main" ]; then
