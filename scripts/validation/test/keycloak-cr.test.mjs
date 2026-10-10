@@ -67,7 +67,7 @@ test("the Keycloak database connection verifies the server certificate", () => {
 const RDS_CA_CONFIGMAP = "rds-ca-bundle";
 const RDS_CA_KEY = "global-bundle.pem";
 const KEYCLOAK_CONF_DIR = "/opt/keycloak/conf";
-const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/spec/db/url", "/spec/env"];
+const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/spec/db", "/spec/env"];
 const JVM_OPTIONS_ENV = /^(JAVA_OPTS.*|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
 
 // spec.db: the operator passes vendor, host, port and database through
@@ -280,18 +280,37 @@ function kustomizationFiles(dir, seen = new Set()) {
 
 const overlays = fs.readdirSync(path.join(root, "deploy/kustomize/overlays"));
 
-const touchesProtected = (p) =>
-  p === "" || p === "/" || PROTECTED_CR_PATHS.some((x) => p === x || p.startsWith(`${x}/`) || x.startsWith(`${p.replace(/\/$/, "")}/`));
-
 // kustomize selects the resources a patch applies to by the target's group,
 // version, kind, name and namespace, each an anchored regular expression
 // (api/types/selector.go), and by label and annotation selectors. A target
-// may select the Keycloak CR unless one of these patterns cannot match it;
-// namespace and the selectors are not evaluated, so they never exclude it.
+// may select a protected resource unless one of these patterns cannot match
+// it; namespace and the selectors are not evaluated, so they never exclude it.
 // Replacement targets match exactly (kyaml resid IsSelectedBy).
 const KEYCLOAK_ID = { group: "k8s.keycloak.org", version: "v2beta1", kind: "Keycloak", name: "keycloak" };
-function targetMaySelectKeycloak(target) {
-  return Object.entries(KEYCLOAK_ID).every(([field, value]) => {
+const IDENTITY_ENVIRONMENT_ID = { group: "", version: "v1", kind: "ConfigMap", name: IDENTITY_ENVIRONMENT };
+
+// What overlay and component patches and replacements may not touch, per
+// resource: the Keycloak CR's database options, pod template, env and spec.db
+// (except the pool sizes), and the identity-environment values that
+// components/environment copies into spec.db.host and spec.db.database.
+// Those two replacements, with no options, are the only way into spec.db;
+// "every overlay feeds spec.db a plain host and database name" checks the
+// values they copy.
+const PROTECTED = [
+  { id: KEYCLOAK_ID, label: "the Keycloak CR", paths: PROTECTED_CR_PATHS, allowed: ["/spec/db/poolInitialSize", "/spec/db/poolMinSize", "/spec/db/poolMaxSize"] },
+  { id: IDENTITY_ENVIRONMENT_ID, label: `ConfigMap ${IDENTITY_ENVIRONMENT}`, paths: ["/data/databaseHost", "/data/databaseName"], allowed: [] }
+];
+const touches = (p, { paths, allowed }) =>
+  !allowed.includes(p) && (p === "" || p === "/" || paths.some((x) => p === x || p.startsWith(`${x}/`) || x.startsWith(`${p.replace(/\/$/, "")}/`)));
+const ENVIRONMENT_DATABASE_FIELDS = new Map([["spec.db.host", "data.databaseHost"], ["spec.db.database", "data.databaseName"]]);
+const isEnvironmentDatabaseReplacement = (r, t, fieldPath) =>
+  ENVIRONMENT_DATABASE_FIELDS.has(fieldPath) &&
+  r?.source?.kind === "ConfigMap" && r.source.name === IDENTITY_ENVIRONMENT &&
+  r.source.fieldPath === ENVIRONMENT_DATABASE_FIELDS.get(fieldPath) &&
+  r.source.options === undefined && t.options === undefined;
+
+function targetMaySelect(target, id) {
+  return Object.entries(id).every(([field, value]) => {
     const pattern = target?.[field];
     if (pattern === undefined || pattern === null || pattern === "") return true;
     try {
@@ -301,8 +320,8 @@ function targetMaySelectKeycloak(target) {
     }
   });
 }
-const replacementMaySelectKeycloak = (select) =>
-  Object.entries(KEYCLOAK_ID).every(([field, value]) => !select?.[field] || select[field] === value);
+const replacementMaySelect = (select, id) =>
+  Object.entries(id).every(([field, value]) => !select?.[field] || select[field] === value);
 
 // Paths a strategic-merge patch writes, replaces or deletes. $patch
 // (replace, delete) and $retainKeys act on the map that holds them;
@@ -322,8 +341,9 @@ function smpTouchedPaths(node, at) {
 
 const isRemote = (entry) => /^[a-z][a-z0-9+.-]*:\/\/|^git::|^git@|^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\//i.test(entry);
 
-// Patches, replacements and transformers in one kustomization that can reach
-// the database TLS settings of the Keycloak CR, read without building it.
+// Patches, replacements, transformers and generators in one kustomization
+// that can reach the database TLS settings of the Keycloak CR (PROTECTED),
+// read without building it.
 // load(relativePath) returns a file's text. This is a fast check for the
 // realm job's npm test; the rendered check below, which the manifests job
 // runs with FBX_REQUIRE_KUSTOMIZE=1, judges the built result.
@@ -332,44 +352,57 @@ function kustomizationPatchProblems(k, load) {
   if (k.patchesJson6902 !== undefined) problems.push("uses patchesJson6902; use patches");
   if (k.patchesStrategicMerge !== undefined) problems.push("uses patchesStrategicMerge; use patches");
   if (k.transformers !== undefined) problems.push("uses transformers, which this check does not read; use patches or replacements");
+  if (k.generators !== undefined) problems.push("uses generators, which this check does not read");
+  for (const g of k.configMapGenerator || []) {
+    if (g?.name === IDENTITY_ENVIRONMENT) problems.push(`configMapGenerator ${g.name} can replace the values copied into spec.db; edit the overlay's ${IDENTITY_ENVIRONMENT}.yaml`);
+  }
   for (const entry of [...(k.resources || []), ...(k.components || [])]) {
     if (isRemote(entry)) problems.push(`remote ${entry} cannot be checked without building it`);
   }
   for (const patch of k.patches || []) {
     const docs = YAML.parseAllDocuments(patch.patch ?? load(patch.path)).map((d) => d.toJS());
     if (docs.length === 1 && Array.isArray(docs[0])) {
-      if (!targetMaySelectKeycloak(patch.target)) continue;
-      for (const op of docs[0]) {
-        for (const p of [op.path, op.from].filter((x) => x !== undefined)) {
-          if (touchesProtected(p)) problems.push(`patch ${op.op} ${p} on the Keycloak CR touches the database TLS settings`);
+      for (const rule of PROTECTED) {
+        if (!targetMaySelect(patch.target, rule.id)) continue;
+        for (const op of docs[0]) {
+          for (const p of [op.path, op.from].filter((x) => x !== undefined)) {
+            if (touches(p, rule)) problems.push(`patch ${op.op} ${p} on ${rule.label} touches the database TLS settings`);
+          }
         }
       }
       continue;
     }
     // Strategic merge: with a target, kustomize applies the patch to what the
-    // target selects; without one, to the resource with the patch's own id.
+    // target selects; without one, to the resource with the patch's own id
+    // (here: any resource of that kind).
     for (const body of docs) {
-      if (patch.target ? !targetMaySelectKeycloak(patch.target) : body?.kind !== "Keycloak") continue;
       const { apiVersion, kind, metadata, ...rest } = body || {};
-      for (const p of smpTouchedPaths(rest, "")) {
-        if (touchesProtected(p)) problems.push(`strategic-merge patch on the Keycloak CR touches ${p || "the whole resource"}`);
+      for (const rule of PROTECTED) {
+        if (patch.target ? !targetMaySelect(patch.target, rule.id) : kind !== rule.id.kind) continue;
+        for (const p of smpTouchedPaths(rest, "")) {
+          if (touches(p, rule)) problems.push(`strategic-merge patch on ${rule.label} touches ${p || "the whole resource"}`);
+        }
       }
     }
   }
   for (const r of k.replacements || []) {
     const loaded = r.path === undefined ? [r] : [YAML.parse(load(r.path))].flat();
-    for (const t of loaded.flatMap((x) => x?.targets || [])) {
-      if (!replacementMaySelectKeycloak(t.select)) continue;
-      for (const fp of t.fieldPaths || []) {
-        const p = `/${fp.replace(/\./g, "/")}`;
-        if (touchesProtected(p)) problems.push(`replacement into ${fp} touches the database TLS settings`);
+    for (const x of loaded) {
+      for (const t of x?.targets || []) {
+        for (const rule of PROTECTED) {
+          if (!replacementMaySelect(t.select, rule.id)) continue;
+          for (const fp of t.fieldPaths || []) {
+            const p = `/${fp.replace(/\./g, "/")}`;
+            if (touches(p, rule) && !isEnvironmentDatabaseReplacement(x, t, fp)) problems.push(`replacement into ${fp} of ${rule.label} touches the database TLS settings`);
+          }
+        }
       }
     }
   }
   return problems;
 }
 
-test("no overlay or component patch rewrites the database options, the pod template, spec.env or spec.db.url", () => {
+test("no overlay or component patch rewrites the database options, the pod template, spec.env, spec.db or the identity-environment database values", () => {
   for (const overlay of overlays) {
     for (const { dir, file, k } of kustomizationFiles(path.join(root, "deploy/kustomize/overlays", overlay))) {
       const problems = kustomizationPatchProblems(k, (rel) => fs.readFileSync(path.join(dir, rel), "utf8"));
@@ -421,8 +454,27 @@ test("the patch check finds every patch, replacement and transformer that can re
     "inline replacement into spec.env": { replacements: [replacementInto("spec.env.0.value")] },
     "a transformers entry": { transformers: ["patch-transformer.yaml"] },
     "a remote component": { components: ["https://github.com/example/repo//component?ref=v1"] },
-    "a remote resource": { resources: ["github.com/example/repo//base?ref=v1"] }
+    "a remote resource": { resources: ["github.com/example/repo//base?ref=v1"] },
+    // spec.db: host and database go into the JDBC URL; only the pool sizes
+    // may be patched, and only identity-environment feeds host and database.
+    "JSON patch on spec.db.database": { patches: [{ target: { kind: "Keycloak", name: "keycloak" }, patch: "- op: replace\n  path: /spec/db/database\n  value: db?\n" }] },
+    "JSON patch replacing spec.db": { patches: [{ target: { kind: "Keycloak" }, patch: "- op: replace\n  path: /spec/db\n  value: {}\n" }] },
+    "SMP setting spec.db.host": { patches: [{ patch: smp("  db:\n    host: writer.example\n") }] },
+    "SMP replacing spec.db": { patches: [{ patch: smp("  db:\n    $patch: replace\n    poolMaxSize: 40\n") }] },
+    "replacement into spec.db.database from another ConfigMap": { replacements: [{ source: { kind: "ConfigMap", name: "other", fieldPath: "data.databaseName" }, targets: [{ select: { kind: "Keycloak", name: "keycloak" }, fieldPaths: ["spec.db.database"] }] }] },
+    "replacement of databaseHost into spec.db.database": { replacements: [{ source: { kind: "ConfigMap", name: "identity-environment", fieldPath: "data.databaseHost" }, targets: [{ select: { kind: "Keycloak", name: "keycloak" }, fieldPaths: ["spec.db.database"] }] }] },
+    "replacement of databaseName with target options": { replacements: [{ source: { kind: "ConfigMap", name: "identity-environment", fieldPath: "data.databaseName" }, targets: [{ select: { kind: "Keycloak", name: "keycloak" }, fieldPaths: ["spec.db.database"], options: { delimiter: "?", index: 1 } }] }] },
+    "replacement of databaseName with source options": { replacements: [{ source: { kind: "ConfigMap", name: "identity-environment", fieldPath: "data.databaseName", options: { delimiter: "_", index: 0 } }, targets: [{ select: { kind: "Keycloak", name: "keycloak" }, fieldPaths: ["spec.db.database"] }] }] },
+    // identity-environment data.databaseHost and data.databaseName: the
+    // static check reads them from the overlay's resource file.
+    "JSON patch on identity-environment databaseName": { patches: [{ target: { kind: "ConfigMap", name: "identity-environment" }, patch: "- op: replace\n  path: /data/databaseName\n  value: db?\n" }] },
+    "JSON patch replacing the data of any ConfigMap": { patches: [{ target: { kind: "ConfigMap" }, patch: "- op: replace\n  path: /data\n  value: {}\n" }] },
+    "SMP on identity-environment databaseHost": { patches: [{ patch: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: identity-environment\ndata:\n  databaseHost: writer.example?\n" }] },
+    "replacement into identity-environment databaseName": { replacements: [{ source: { kind: "ConfigMap", name: "other", fieldPath: "data.x" }, targets: [{ select: { kind: "ConfigMap", name: "identity-environment" }, fieldPaths: ["data.databaseName"] }] }] },
+    "configMapGenerator merging into identity-environment": { configMapGenerator: [{ name: "identity-environment", behavior: "merge", literals: ["databaseName=db?"] }] },
+    "a generators entry": { generators: ["generator.yaml"] }
   };
+  const environmentComponent = YAML.parse(fs.readFileSync(path.join(root, "deploy/kustomize/components/environment/kustomization.yaml"), "utf8"));
   const clean = {
     "JSON patch on a PodDisruptionBudget": { patches: [{ target: { kind: "PodDisruptionBudget", name: "keycloak" }, patch: remove0 }] },
     "JSON patch with target kind Keycloak.+": { patches: [{ target: { kind: "Keycloak.+" }, patch: remove0 }] },
@@ -431,7 +483,11 @@ test("the patch check finds every patch, replacement and transformer that can re
     "SMP $patch: replace on spec.hostname": { patches: [{ patch: smp("  hostname:\n    $patch: replace\n    hostname: https://IDENTITY_HOST\n") }] },
     "SMP on spec.db.poolMaxSize": { patches: [{ patch: smp("  db:\n    poolMaxSize: 40\n") }] },
     "replacement into a Secret": { replacements: [{ source: { kind: "ConfigMap", name: "x", fieldPath: "data.y" }, targets: [{ select: { kind: "Secret" }, fieldPaths: ["data.additionalOptions"] }] }] },
-    "local resources and components": { resources: ["../../base", "extra.yaml"], components: ["../../components/environment"] }
+    "local resources and components": { resources: ["../../base", "extra.yaml"], components: ["../../components/environment"] },
+    "JSON patch on spec.db.poolMaxSize": { patches: [{ target: { kind: "Keycloak", name: "keycloak" }, patch: "- op: replace\n  path: /spec/db/poolMaxSize\n  value: 40\n" }] },
+    "the environment component's replacements": { replacements: environmentComponent.replacements },
+    "JSON patch on another ConfigMap's data": { patches: [{ target: { kind: "ConfigMap", name: "keycloak-realm-import-env" }, patch: "- op: replace\n  path: /data/FBX_WEB_ORIGIN\n  value: https://app.example\n" }] },
+    "configMapGenerator for another ConfigMap": { configMapGenerator: [{ name: "openldap-seed", files: ["seed/50-fintechbankx-structure.ldif"] }] }
   };
   const missed = [];
   for (const [name, k] of Object.entries(flagged)) {
