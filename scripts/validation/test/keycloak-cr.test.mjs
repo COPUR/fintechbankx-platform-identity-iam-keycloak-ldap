@@ -228,7 +228,7 @@ function kustomizationFiles(dir, seen = new Set()) {
   const k = YAML.parse(fs.readFileSync(file, "utf8"));
   const out = [{ dir, file, k }];
   for (const entry of [...(k.resources || []), ...(k.components || [])]) {
-    if (/^[a-z]+:\/\//.test(entry)) continue;
+    if (isRemote(entry)) continue; // reported by kustomizationPatchProblems
     const p = path.resolve(dir, entry);
     if (fs.statSync(p).isDirectory()) out.push(...kustomizationFiles(p, seen));
   }
@@ -237,41 +237,171 @@ function kustomizationFiles(dir, seen = new Set()) {
 
 const overlays = fs.readdirSync(path.join(root, "deploy/kustomize/overlays"));
 
-test("no overlay or component patch rewrites the database options, the pod template or spec.db.url", () => {
-  const touchesProtected = (p) =>
-    p === "" || p === "/" || PROTECTED_CR_PATHS.some((x) => p === x || p.startsWith(`${x}/`) || x.startsWith(`${p.replace(/\/$/, "")}/`));
-  for (const overlay of overlays) {
-    for (const { dir, file, k } of kustomizationFiles(path.join(root, "deploy/kustomize/overlays", overlay))) {
-      const where = `${overlay}: ${path.relative(root, file)}`;
-      assert.equal(k.patchesJson6902, undefined, `${where} uses patchesJson6902; use patches`);
-      assert.equal(k.patchesStrategicMerge, undefined, `${where} uses patchesStrategicMerge; use patches`);
-      for (const patch of k.patches || []) {
-        const body = YAML.parse(patch.patch ?? fs.readFileSync(path.join(dir, patch.path), "utf8"));
-        const kind = patch.target?.kind ?? (Array.isArray(body) ? undefined : body?.kind);
-        if (kind !== undefined && kind !== "Keycloak") continue;
-        if (Array.isArray(body)) {
-          for (const op of body) {
-            for (const p of [op.path, op.from].filter((x) => x !== undefined)) {
-              assert.ok(!touchesProtected(p), `${where}: patch ${op.op} ${p} on the Keycloak CR touches the database TLS settings`);
-            }
-          }
-        } else {
-          assert.equal(body?.spec?.additionalOptions, undefined, `${where}: patch sets spec.additionalOptions`);
-          assert.equal(body?.spec?.unsupported, undefined, `${where}: patch sets spec.unsupported`);
-          assert.equal(body?.spec?.db?.url, undefined, `${where}: patch sets spec.db.url`);
+const touchesProtected = (p) =>
+  p === "" || p === "/" || PROTECTED_CR_PATHS.some((x) => p === x || p.startsWith(`${x}/`) || x.startsWith(`${p.replace(/\/$/, "")}/`));
+
+// kustomize selects the resources a patch applies to by the target's group,
+// version, kind, name and namespace, each an anchored regular expression
+// (api/types/selector.go), and by label and annotation selectors. A target
+// may select the Keycloak CR unless one of these patterns cannot match it;
+// namespace and the selectors are not evaluated, so they never exclude it.
+// Replacement targets match exactly (kyaml resid IsSelectedBy).
+const KEYCLOAK_ID = { group: "k8s.keycloak.org", version: "v2beta1", kind: "Keycloak", name: "keycloak" };
+function targetMaySelectKeycloak(target) {
+  return Object.entries(KEYCLOAK_ID).every(([field, value]) => {
+    const pattern = target?.[field];
+    if (pattern === undefined || pattern === null || pattern === "") return true;
+    try {
+      return new RegExp(`^(?:${pattern})$`).test(value);
+    } catch {
+      return true; // a Go (RE2) pattern JavaScript cannot compile: assume it matches
+    }
+  });
+}
+const replacementMaySelectKeycloak = (select) =>
+  Object.entries(KEYCLOAK_ID).every(([field, value]) => !select?.[field] || select[field] === value);
+
+// Paths a strategic-merge patch writes, replaces or deletes. $patch
+// (replace, delete) and $retainKeys act on the map that holds them;
+// $setElementOrder/<field> and $deleteFromPrimitiveList/<field> on <field>.
+function smpTouchedPaths(node, at) {
+  if (node === null || typeof node !== "object" || Array.isArray(node)) return [at];
+  const out = [];
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "$patch") {
+      if (value !== "merge") out.push(at);
+    } else if (key === "$retainKeys") out.push(at);
+    else if (key.startsWith("$")) out.push(`${at}/${key.split("/").slice(1).join("/")}`.replace(/\/$/, ""));
+    else out.push(...smpTouchedPaths(value, `${at}/${key}`));
+  }
+  return out;
+}
+
+const isRemote = (entry) => /^[a-z][a-z0-9+.-]*:\/\/|^git::|^git@|^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\//i.test(entry);
+
+// Patches, replacements and transformers in one kustomization that can reach
+// the database TLS settings of the Keycloak CR, read without building it.
+// load(relativePath) returns a file's text. This is a fast check for the
+// realm job's npm test; the rendered check below, which the manifests job
+// runs with FBX_REQUIRE_KUSTOMIZE=1, judges the built result.
+function kustomizationPatchProblems(k, load) {
+  const problems = [];
+  if (k.patchesJson6902 !== undefined) problems.push("uses patchesJson6902; use patches");
+  if (k.patchesStrategicMerge !== undefined) problems.push("uses patchesStrategicMerge; use patches");
+  if (k.transformers !== undefined) problems.push("uses transformers, which this check does not read; use patches or replacements");
+  for (const entry of [...(k.resources || []), ...(k.components || [])]) {
+    if (isRemote(entry)) problems.push(`remote ${entry} cannot be checked without building it`);
+  }
+  for (const patch of k.patches || []) {
+    const docs = YAML.parseAllDocuments(patch.patch ?? load(patch.path)).map((d) => d.toJS());
+    if (docs.length === 1 && Array.isArray(docs[0])) {
+      if (!targetMaySelectKeycloak(patch.target)) continue;
+      for (const op of docs[0]) {
+        for (const p of [op.path, op.from].filter((x) => x !== undefined)) {
+          if (touchesProtected(p)) problems.push(`patch ${op.op} ${p} on the Keycloak CR touches the database TLS settings`);
         }
       }
-      for (const r of k.replacements || []) {
-        for (const t of r.targets || []) {
-          if (t.select?.kind !== undefined && t.select.kind !== "Keycloak") continue;
-          for (const fp of t.fieldPaths || []) {
-            const p = `/${fp.replace(/\./g, "/")}`;
-            assert.ok(!touchesProtected(p), `${where}: replacement into ${fp} touches the database TLS settings`);
-          }
-        }
+      continue;
+    }
+    // Strategic merge: with a target, kustomize applies the patch to what the
+    // target selects; without one, to the resource with the patch's own id.
+    for (const body of docs) {
+      if (patch.target ? !targetMaySelectKeycloak(patch.target) : body?.kind !== "Keycloak") continue;
+      const { apiVersion, kind, metadata, ...rest } = body || {};
+      for (const p of smpTouchedPaths(rest, "")) {
+        if (touchesProtected(p)) problems.push(`strategic-merge patch on the Keycloak CR touches ${p || "the whole resource"}`);
       }
     }
   }
+  for (const r of k.replacements || []) {
+    const loaded = r.path === undefined ? [r] : [YAML.parse(load(r.path))].flat();
+    for (const t of loaded.flatMap((x) => x?.targets || [])) {
+      if (!replacementMaySelectKeycloak(t.select)) continue;
+      for (const fp of t.fieldPaths || []) {
+        const p = `/${fp.replace(/\./g, "/")}`;
+        if (touchesProtected(p)) problems.push(`replacement into ${fp} touches the database TLS settings`);
+      }
+    }
+  }
+  return problems;
+}
+
+test("no overlay or component patch rewrites the database options, the pod template, spec.env or spec.db.url", () => {
+  for (const overlay of overlays) {
+    for (const { dir, file, k } of kustomizationFiles(path.join(root, "deploy/kustomize/overlays", overlay))) {
+      const problems = kustomizationPatchProblems(k, (rel) => fs.readFileSync(path.join(dir, rel), "utf8"));
+      assert.deepEqual(problems, [], `${overlay}: ${path.relative(root, file)}`);
+    }
+  }
+});
+
+test("the patch check finds every patch, replacement and transformer that can reach the Keycloak CR", () => {
+  const remove0 = "- op: remove\n  path: /spec/additionalOptions/0\n";
+  const smp = (spec, extra = "") => `apiVersion: k8s.keycloak.org/v2beta1\nkind: Keycloak\nmetadata:\n  name: keycloak\n${extra}spec:\n${spec}`;
+  const replacementInto = (fieldPath) => ({
+    source: { kind: "ConfigMap", name: "identity-environment", fieldPath: "data.databaseName" },
+    targets: [{ select: { kind: "Keycloak", name: "keycloak" }, fieldPaths: [fieldPath] }]
+  });
+  const files = {
+    "replacement-list.yaml": YAML.stringify([replacementInto("spec.additionalOptions.0.value")]),
+    "replacement-one.yaml": YAML.stringify(replacementInto("spec.db.url")),
+    "patch-file.yaml": remove0
+  };
+  const load = (rel) => {
+    if (!(rel in files)) throw new Error(`no fixture ${rel}`);
+    return files[rel];
+  };
+  // kustomize compiles target group, version, kind, name and namespace as
+  // anchored regular expressions (api/types/selector.go).
+  const flagged = {
+    "JSON patch with target kind Keycloa.": { patches: [{ target: { kind: "Keycloa.", name: "keycloak" }, patch: remove0 }] },
+    "JSON patch with target kind .*": { patches: [{ target: { kind: ".*" }, patch: remove0 }] },
+    "JSON patch with target kind Keycloak|Secret": { patches: [{ target: { kind: "Keycloak|Secret", name: "keycloak" }, patch: remove0 }] },
+    "JSON patch with target name key.* and no kind": { patches: [{ target: { name: "key.*" }, patch: remove0 }] },
+    "JSON patch with only a label selector": { patches: [{ target: { labelSelector: "app.kubernetes.io/name=keycloak" }, patch: remove0 }] },
+    "JSON patch from a file": { patches: [{ target: { kind: "Keycloak" }, path: "patch-file.yaml" }] },
+    "JSON patch adding spec.env": { patches: [{ target: { kind: "Keycloak", name: "keycloak" }, patch: "- op: add\n  path: /spec/env\n  value: []\n" }] },
+    "JSON patch replacing spec": { patches: [{ target: { kind: "Keycloak" }, patch: "- op: replace\n  path: /spec\n  value: {}\n" }] },
+    "JSON patch moving into spec.unsupported": { patches: [{ target: { kind: "Keycloak" }, patch: "- op: move\n  from: /spec/tracing\n  path: /spec/unsupported\n" }] },
+    "SMP with spec $patch: replace": { patches: [{ patch: smp("  $patch: replace\n  instances: 2\n") }] },
+    "SMP with $patch: replace under target kind Keycloa.": { patches: [{ target: { kind: "Keycloa." }, patch: smp("  $patch: replace\n  instances: 2\n") }] },
+    "SMP with $patch: delete on the CR": { patches: [{ patch: smp("  instances: 2\n", "$patch: delete\n") }] },
+    "SMP with $retainKeys on spec": { patches: [{ patch: smp("  $retainKeys: [instances, db]\n  instances: 2\n") }] },
+    "SMP with $setElementOrder on additionalOptions": { patches: [{ patch: smp("  $setElementOrder/additionalOptions:\n    - name: health-enabled\n") }] },
+    "SMP deleting spec.db": { patches: [{ patch: smp("  db: null\n") }] },
+    "SMP setting spec.db.url": { patches: [{ patch: smp("  db:\n    url: jdbc:postgresql://h:5432/d\n") }] },
+    "SMP setting spec.env": { patches: [{ patch: smp("  env:\n    - name: KC_DB_URL\n      value: jdbc:postgresql://h:5432/d\n") }] },
+    "SMP replacing the pod template": { patches: [{ patch: smp("  unsupported:\n    podTemplate:\n      $patch: replace\n") }] },
+    "SMP as the second document of a patch": { patches: [{ patch: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\ndata: {}\n---\n${smp("  additionalOptions: []\n")}` }] },
+    "replacement from a file holding a list": { replacements: [{ path: "replacement-list.yaml" }] },
+    "replacement from a file holding one replacement": { replacements: [{ path: "replacement-one.yaml" }] },
+    "inline replacement into spec.env": { replacements: [replacementInto("spec.env.0.value")] },
+    "a transformers entry": { transformers: ["patch-transformer.yaml"] },
+    "a remote component": { components: ["https://github.com/example/repo//component?ref=v1"] },
+    "a remote resource": { resources: ["github.com/example/repo//base?ref=v1"] }
+  };
+  const clean = {
+    "JSON patch on a PodDisruptionBudget": { patches: [{ target: { kind: "PodDisruptionBudget", name: "keycloak" }, patch: remove0 }] },
+    "JSON patch with target kind Keycloak.+": { patches: [{ target: { kind: "Keycloak.+" }, patch: remove0 }] },
+    "JSON patch with target name other": { patches: [{ target: { kind: "Keycloak", name: "other" }, patch: remove0 }] },
+    "JSON patch on spec.instances": { patches: [{ target: { kind: "Keycloak", name: "keycloak" }, patch: "- op: replace\n  path: /spec/instances\n  value: 2\n" }] },
+    "SMP $patch: replace on spec.hostname": { patches: [{ patch: smp("  hostname:\n    $patch: replace\n    hostname: https://IDENTITY_HOST\n") }] },
+    "SMP on spec.db.poolMaxSize": { patches: [{ patch: smp("  db:\n    poolMaxSize: 40\n") }] },
+    "replacement into a Secret": { replacements: [{ source: { kind: "ConfigMap", name: "x", fieldPath: "data.y" }, targets: [{ select: { kind: "Secret" }, fieldPaths: ["data.additionalOptions"] }] }] },
+    "local resources and components": { resources: ["../../base", "extra.yaml"], components: ["../../components/environment"] }
+  };
+  const missed = [];
+  for (const [name, k] of Object.entries(flagged)) {
+    let problems;
+    try { problems = kustomizationPatchProblems(k, load); } catch (e) { problems = [`threw ${e.message}`]; }
+    if (problems.length === 0 || problems.some((p) => p.startsWith("threw "))) missed.push(`${name}: expected a problem, got ${JSON.stringify(problems)}`);
+  }
+  for (const [name, k] of Object.entries(clean)) {
+    let problems;
+    try { problems = kustomizationPatchProblems(k, load); } catch (e) { problems = [`threw ${e.message}`]; }
+    if (problems.length !== 0) missed.push(`${name}: expected no problem, got ${JSON.stringify(problems)}`);
+  }
+  assert.deepEqual(missed, []);
 });
 
 test("the Keycloak package mentions sslmode and sslrootcert exactly once (the CR option)", () => {
@@ -295,7 +425,9 @@ test("the Keycloak package mentions sslmode and sslrootcert exactly once (the CR
 
 // Rendered overlays: runs where kustomize is on PATH. The manifests job sets
 // FBX_REQUIRE_KUSTOMIZE=1 so a missing kustomize fails there instead of
-// skipping; elsewhere the static checks above cover the overlays.
+// skipping. This is the check that decides: the static patch check above
+// reads patches, replacements and the CR source without applying them, and
+// in the realm job's npm test (no kustomize) it is the only overlay check.
 test("every overlay renders exactly one sslmode=verify-full with the mounted RDS CA bundle", (t) => {
   const probe = spawnSync("kustomize", ["version"], { encoding: "utf8" });
   if (probe.error) {
