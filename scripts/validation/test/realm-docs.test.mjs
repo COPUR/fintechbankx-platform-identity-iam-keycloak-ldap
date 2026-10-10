@@ -3,6 +3,8 @@
 // project owner on 2026-10-10 (decision card "Decide how to handle the
 // customer service's power to change customer e-mails in Keycloak", option
 // "Accept for now"). The acceptance is narrow: e-mail and name changes only.
+// The alert's allow-list also lets username, emailVerified and attributes
+// through; the doc must name those as not covered by the decision.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -23,15 +25,22 @@ function markdownFiles(dir) {
   return out;
 }
 
-// The **Residual risk:** paragraph and, when present, the **Owner decision**
-// paragraph that follows it.
-const residualRisk = () => {
-  const start = realmDoc.indexOf("**Residual risk:**");
-  assert.ok(start >= 0, "REALM_AS_CODE.md has no **Residual risk:** paragraph");
-  let end = realmDoc.indexOf("\n\n", start);
-  if (end >= 0 && realmDoc.startsWith("**Owner decision", end + 2)) end = realmDoc.indexOf("\n\n", end + 2);
+// One paragraph of REALM_AS_CODE.md, found by its bold lead-in.
+const paragraph = (lead) => {
+  const start = realmDoc.indexOf(`**${lead}`);
+  assert.ok(start >= 0, `REALM_AS_CODE.md has no **${lead}** paragraph`);
+  const end = realmDoc.indexOf("\n\n", start);
   return realmDoc.slice(start, end < 0 ? undefined : end);
 };
+
+// The **Residual risk:** paragraph and the decision paragraphs that follow it.
+const residualRisk = () =>
+  [paragraph("Residual risk:"), paragraph("Owner decision"), paragraph("Not covered by the owner decision")].join("\n\n");
+
+const sentences = (text) => text.split(/(?<=\.)\s+/);
+
+// Changes the owner did NOT accept; the acceptance sentence must name none of them.
+const NOT_ACCEPTED = /password|credential reset|disable|delete|log ?out|required action|role|group|username|emailVerified|attribute|outside/i;
 
 test("no document still calls the customer-service residual risk a pending user decision", () => {
   for (const file of markdownFiles(root)) {
@@ -44,14 +53,45 @@ test("the residual risk records the owner's acceptance with its date and source"
   assert.match(residualRisk(), /accepted for now by the project owner \(decision card, 2026-10-10\)/);
 });
 
-test("the acceptance covers e-mail and name changes only; everything else still alerts", () => {
-  const text = residualRisk();
-  assert.match(text, /e-mail/i);
-  assert.match(text, /name/i);
-  for (const still of ["credential", "required action", "disable", "delete", "log", "role", "group", "outside `/customers`"]) {
-    assert.ok(text.toLowerCase().includes(still.toLowerCase()), `residual risk does not say that ${still} still alerts`);
+test("the acceptance sentence names e-mail and the name fields only", () => {
+  const scope = sentences(paragraph("Owner decision")).filter((x) => x.startsWith("Scope:"));
+  assert.equal(scope.length, 1, "the owner decision has exactly one Scope: sentence");
+  assert.match(scope[0], /e-mail/);
+  assert.match(scope[0], /`firstName`/);
+  assert.match(scope[0], /`lastName`/);
+  assert.doesNotMatch(scope[0], NOT_ACCEPTED, "the Scope: sentence names a change the owner did not accept");
+});
+
+test("no sentence of the owner decision accepts anything beyond e-mail and names", () => {
+  for (const s of sentences(paragraph("Owner decision"))) {
+    if (!/\baccept/i.test(s) || /\bnot\b/.test(s)) continue;
+    assert.doesNotMatch(s, NOT_ACCEPTED, `sentence accepts more than e-mail and names: ${s}`);
   }
-  assert.match(text, /still alert/i);
+});
+
+test("the owner decision says every other change still alerts and is not accepted", () => {
+  const negation = sentences(paragraph("Owner decision")).filter((s) => /does (\*\*)?not(\*\*)? accept/.test(s));
+  assert.equal(negation.length, 1, "the owner decision has exactly one 'does not accept' sentence");
+  const [text] = negation;
+  for (const still of ["credential reset", "disable", "delete", "logout", "required action", "role", "group", "outside `/customers`"]) {
+    assert.ok(text.includes(still), `the 'does not accept' sentence does not name ${still}`);
+  }
+  assert.match(text, /: those still alert\.$/);
+});
+
+test("the keys the alert also lets through are named and left open, not presented as accepted", () => {
+  const risk = paragraph("Residual risk:");
+  for (const key of ["`username`", "`email`", "`firstName`", "`lastName`", "`emailVerified`", "`attributes`"]) {
+    assert.ok(risk.includes(key), `the residual risk does not say the alert lets ${key} through`);
+  }
+  assert.doesNotMatch(risk, /except the identity-link update and the e-mail and name changes/);
+  const open = paragraph("Not covered by the owner decision");
+  for (const key of ["`username`", "`emailVerified`", "`attributes`", "`verifyEmail: true`"]) {
+    assert.ok(open.includes(key), `the not-covered paragraph does not name ${key}`);
+  }
+  assert.match(open, /new e-mail together with `emailVerified: true`/);
+  assert.match(open, /without an alert/);
+  assert.match(open, /2026-10-08[^.]*stays open/);
 });
 
 test("the remaining manage-members sign-off card stays open and no security-team sign-off is claimed", () => {
