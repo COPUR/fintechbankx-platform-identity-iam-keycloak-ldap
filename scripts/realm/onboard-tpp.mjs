@@ -17,7 +17,9 @@
 // status (active | suspended, default active) decides the enabled flag, never
 // the template:
 //   - suspended: the client is disabled, its notBefore is set to now on the
-//     transition (refresh and offline tokens issued before are rejected), and
+//     transition from enabled, or on the first sync of a client an operator
+//     already disabled in the console while its notBefore is still 0 or
+//     missing (refresh and offline tokens issued before are rejected), and
 //     every user holding a session or offline token of the client has it
 //     revoked (DELETE /users/{id}/consents/{clientId}: consent, offline token
 //     and that client's sessions only; the user's other sessions are kept).
@@ -184,9 +186,11 @@ export async function onboardTpp({ fetch = globalThis.fetch, baseUrl, token, rea
   try {
     if (existing) {
       const update = { ...client, id: uuid, enabled };
-      // Tokens issued before the suspension are rejected from now on; set once,
-      // on the transition, so a re-run does not move it.
-      if (suspended && existing.enabled !== false) update.notBefore = Math.floor(Date.now() / 1000);
+      // Tokens issued before the suspension are rejected from now on. Set on the
+      // transition from enabled, and on a client an operator already disabled in
+      // the console whose notBefore is still unset (0 or missing), so the
+      // break-glass path gets it too; a re-run does not move it.
+      if (suspended && (existing.enabled !== false || !(existing.notBefore > 0))) update.notBefore = Math.floor(Date.now() / 1000);
       await call("PUT", `${R}/clients/${uuid}`, update);
       if (!suspended && existing.enabled === false) warn(disabledWarning(id));
       if (suspended) {

@@ -304,6 +304,47 @@ test("status suspended disables an enabled client, sets notBefore and revokes it
   await assert.rejects(onboarding.onboardTpp({ fetch: failing, baseUrl: BASE, token: "t", realm: "fintechbankx", client: onboarding.buildTppClient({ template, spec: spec({ status: "suspended" }) }), paymentsAuthorised: true, status: "suspended" }), /-> 500/);
 });
 
+test("console disable then Git suspended sets notBefore and revokes sessions (break-glass, runbook step 3 then step 1)", async () => {
+  const kc = fakeKeycloak({ sessions: { "uuid-1": { online: ["user-a"], offline: ["user-b"] } } });
+  await run(kc);
+  const c = kc.state.get("uuid-1");
+  c.enabled = false; // operator disables it in the admin console; Keycloak keeps notBefore 0
+  c.notBefore = 0;
+  await run(kc); // still listed active: left disabled, warned, nothing revoked
+  assert.equal(kc.state.get("uuid-1").notBefore, 0);
+  const before = kc.calls.length;
+  const t0 = Math.floor(Date.now() / 1000);
+  const res = await run(kc, spec({ status: "suspended" }));
+  const stored = kc.state.get("uuid-1");
+  assert.equal(stored.enabled, false);
+  assert.ok(Number.isInteger(stored.notBefore) && stored.notBefore >= t0, `notBefore ${stored.notBefore}`);
+  const put = kc.calls.slice(before).find((x) => x.method === "PUT" && x.url === `${R}/clients/uuid-1`);
+  assert.equal(put.body.notBefore, stored.notBefore);
+  assert.deepEqual(res.revokedUsers, ["user-a", "user-b"]);
+  // Also when Keycloak omits notBefore from the representation.
+  const kc2 = fakeKeycloak();
+  await run(kc2);
+  kc2.state.get("uuid-1").enabled = false;
+  delete kc2.state.get("uuid-1").notBefore;
+  await run(kc2, spec({ status: "suspended" }));
+  assert.ok(kc2.state.get("uuid-1").notBefore >= t0, `notBefore ${kc2.state.get("uuid-1").notBefore}`);
+});
+
+test("re-running suspended does not move notBefore (break-glass path)", async () => {
+  const kc = fakeKeycloak();
+  await run(kc);
+  kc.state.get("uuid-1").enabled = false; // console disable
+  await run(kc, spec({ status: "suspended" }));
+  const nb = kc.state.get("uuid-1").notBefore;
+  assert.ok(nb > 0, `notBefore ${nb}`);
+  kc.state.get("uuid-1").notBefore = nb - 60; // make a move detectable within the same second
+  const before = kc.calls.length;
+  await run(kc, spec({ status: "suspended" }));
+  assert.equal(kc.state.get("uuid-1").notBefore, nb - 60);
+  const put = kc.calls.slice(before).find((x) => x.method === "PUT" && x.url === `${R}/clients/uuid-1`);
+  assert.equal(put.body.notBefore, undefined);
+});
+
 test("a TPP listed suspended before it exists is created and left disabled", async () => {
   const kc = fakeKeycloak();
   const res = await run(kc, spec({ status: "suspended" }));
