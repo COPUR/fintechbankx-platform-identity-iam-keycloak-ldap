@@ -47,11 +47,38 @@ test("the Keycloak database connection verifies the server certificate", () => {
 // Database TLS guardrail: the Keycloak CR carries exactly one sslmode, it is
 // verify-full, and sslrootcert is the RDS CA bundle (ConfigMap rds-ca-bundle,
 // key global-bundle.pem, from the mesh repo's trust-manager Bundle) at the
-// path where the CR mounts it. Any other way to set the JDBC URL (spec.db.url,
-// option db-url, a KC_DB_URL* env) would drop or override these properties.
+// path where the CR mounts it. The JDBC URL is the one the operator builds
+// from spec.db (host, port, database) plus that db-url-properties option.
+// Keycloak 26.7.5 also reads its options from the sources below. Each of them
+// can set db-url, which replaces that URL and drops db-url-properties (pgjdbc
+// then connects without TLS when the server declines it), so the check allows
+// none of them for the Keycloak container:
+// - spec.db.url, and every additionalOptions name the operator turns into a
+//   KC_DB* env var (KC_ + upper case, non-alphanumerics to _: db_url, DB-URL)
+//   except the one db-url-properties;
+// - KC_DB* env vars in spec.env (the operator adds it to the container) or in
+//   the pod template, any spelling; a KCKEY_* env var naming a db option (it
+//   maps another KC_* variable to that option); KC_CONFIG_FILE or option
+//   config-file; kc. system properties in env values (JAVA_OPTS_APPEND);
+// - pod template args or command (CLI options such as --db-url), envFrom
+//   (its variables are not visible here) and mounts over /opt/keycloak/conf
+//   (keycloak.conf);
+// - a jdbc: URL anywhere in the CR.
 const RDS_CA_CONFIGMAP = "rds-ca-bundle";
 const RDS_CA_KEY = "global-bundle.pem";
-const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/spec/db/url"];
+const KEYCLOAK_CONF_DIR = "/opt/keycloak/conf";
+const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/spec/db/url", "/spec/env"];
+const JVM_OPTIONS_ENV = /^(JAVA_OPTS.*|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
+
+// Env var form of a Keycloak option or variable name: upper case, every
+// non-alphanumeric character an underscore. The operator names the variable
+// for an additionalOptions entry KC_ + this (getKeycloakOptionEnvVarName).
+const envForm = (name) => String(name ?? "").replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
+const isDatabaseOption = (env) => /^KC_DB(_|$)/.test(env);
+const pathsOverlap = (a, b) => {
+  const [x, y] = [a, b].map((p) => String(p).replace(/\/+$/, ""));
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+};
 
 // Path of the RDS CA bundle inside the Keycloak container, or null when the
 // CR does not mount it. The operator merges the first podTemplate container
@@ -75,15 +102,42 @@ function databaseTlsProblems(kc) {
   const sslmodeCount = (text.match(/sslmode/gi) || []).length;
   if (sslmodeCount !== 1) problems.push(`expected exactly one sslmode in the Keycloak CR, found ${sslmodeCount}`);
   if (/sslfactory|sslhostnameverifier/i.test(text)) problems.push("a custom sslfactory or sslhostnameverifier can skip certificate verification");
+  if (/jdbc:/i.test(text)) problems.push("the Keycloak CR carries a JDBC URL; the operator builds it from spec.db host, port and database");
   if (kc?.spec?.db?.url !== undefined) problems.push("spec.db.url replaces the default JDBC URL and drops db-url-properties");
   const options = kc?.spec?.additionalOptions || [];
-  for (const o of options.filter((x) => /^db-url/.test(x.name) && x.name !== "db-url-properties")) {
-    problems.push(`additional option ${o.name} must not be set (the operator sets the JDBC URL from spec.db)`);
+  for (const o of options) {
+    const env = `KC_${envForm(o.name)}`;
+    if (o.name === "db-url-properties") continue;
+    if (isDatabaseOption(env)) problems.push(`additional option ${o.name} (${env}) must not be set: the operator sets the database options from spec.db, db-url-properties is the only other one`);
+    if (env === "KC_CONFIG_FILE") problems.push(`additional option ${o.name} (${env}) points Keycloak at another configuration file`);
   }
-  for (const c of kc?.spec?.unsupported?.podTemplate?.spec?.containers || []) {
-    for (const e of c.env || []) if (/^KC_DB_URL/i.test(e.name)) problems.push(`podTemplate env ${e.name} overrides the operator's JDBC URL`);
+  const pod = kc?.spec?.unsupported?.podTemplate?.spec;
+  const envSources = [["spec.env", kc?.spec?.env], ...(pod?.containers || []).map((c, i) => [`podTemplate containers[${i}].env`, c.env])];
+  for (const [where, envs] of envSources) {
+    for (const e of envs || []) {
+      const env = envForm(e.name);
+      // Only a literal value can be checked; secret and valueFrom cannot.
+      const literal = e.value === undefined || e.value === null ? undefined : String(e.value);
+      if (isDatabaseOption(env)) problems.push(`${where} ${e.name} sets a database option outside spec.db`);
+      if (env === "KC_CONFIG_FILE") problems.push(`${where} ${e.name} points Keycloak at another configuration file`);
+      if (env.startsWith("KCKEY_")) {
+        const target = `KC_${envForm(literal)}`;
+        if (literal === undefined) problems.push(`${where} ${e.name} must be a literal value (it names the option KC_${env.slice(6)} sets)`);
+        else if (isDatabaseOption(target)) problems.push(`${where} ${e.name} maps KC_${env.slice(6)} to the database option ${literal}`);
+        else if (target === "KC_CONFIG_FILE") problems.push(`${where} ${e.name} maps KC_${env.slice(6)} to ${literal}, another configuration file`);
+      }
+      if (JVM_OPTIONS_ENV.test(env) && literal === undefined) problems.push(`${where} ${e.name} must be a literal value (JVM options can set kc. system properties)`);
+      if (literal !== undefined && /-D(kc|quarkus)\./i.test(literal)) problems.push(`${where} ${e.name} sets a kc. or quarkus. system property`);
+    }
   }
-  const props = options.filter((o) => o.name === "db-url-properties");
+  const keycloakContainer = pod?.containers?.[0] || {};
+  if ((keycloakContainer.args || []).length) problems.push("podTemplate args replace the operator's start command, and CLI options such as --db-url take precedence over the CR's options");
+  if ((keycloakContainer.command || []).length) problems.push("podTemplate command replaces the operator's start command");
+  if (keycloakContainer.envFrom !== undefined) problems.push("podTemplate envFrom on the Keycloak container can set KC_DB_URL, and its variables are not visible to this check");
+  for (const m of keycloakContainer.volumeMounts || []) {
+    if (pathsOverlap(m.mountPath, KEYCLOAK_CONF_DIR)) problems.push(`podTemplate mount at ${m.mountPath} replaces Keycloak's configuration files (${KEYCLOAK_CONF_DIR}/keycloak.conf can set db-url)`);
+  }
+  const props = options.filter((o) => `KC_${envForm(o.name)}` === "KC_DB_URL_PROPERTIES");
   if (props.length !== 1) {
     problems.push(`expected exactly one db-url-properties option, found ${props.length}`);
     return problems;
@@ -125,16 +179,44 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "another ConfigMap as the bundle": [(kc) => { pod(kc).volumes[0].configMap.name = "corporate-directory-ca"; }, /is not mounted/],
     "a second db-url-properties option": [(kc) => { kc.spec.additionalOptions.push({ name: "db-url-properties", value: "?ssl=true" }); }, /exactly one db-url-properties/],
     "db-url-properties from a Secret": [(kc) => { delete props(kc).value; props(kc).secret = { name: "x", key: "y" }; }, /literal query string/],
-    "a full db-url option": [(kc) => { kc.spec.additionalOptions.push({ name: "db-url", value: "jdbc:postgresql://h:5432/d" }); }, /option db-url must not be set/],
+    "a full db-url option": [(kc) => { kc.spec.additionalOptions.push({ name: "db-url", value: "jdbc:postgresql://h:5432/d" }); }, /option db-url \(KC_DB_URL\) must not be set/],
     "spec.db.url": [(kc) => { kc.spec.db.url = "jdbc:postgresql://h:5432/d"; }, /spec\.db\.url/],
-    "a KC_DB_URL_PROPERTIES env": [(kc) => { pod(kc).containers[0].env = [{ name: "KC_DB_URL_PROPERTIES", value: "?ssl=true" }]; }, /KC_DB_URL_PROPERTIES/]
+    "a KC_DB_URL_PROPERTIES env": [(kc) => { pod(kc).containers[0].env = [{ name: "KC_DB_URL_PROPERTIES", value: "?ssl=true" }]; }, /KC_DB_URL_PROPERTIES/],
+    // The operator adds spec.env to the Keycloak container (addEnvVars).
+    "KC_DB_URL in the CR's spec.env": [(kc) => { kc.spec.env = [{ name: "KC_DB_URL", value: "jdbc:postgresql://h:5432/d" }]; }, /spec\.env KC_DB_URL sets a database option/],
+    "KC_DB_URL_PROPERTIES in spec.env from a Secret": [(kc) => { kc.spec.env = [{ name: "KC_DB_URL_PROPERTIES", secret: { name: "x", key: "y" } }]; }, /spec\.env KC_DB_URL_PROPERTIES sets a database option/],
+    "a lower-case kc_db_url env": [(kc) => { pod(kc).containers[0].env = [{ name: "kc_db_url", valueFrom: { secretKeyRef: { name: "x", key: "y" } } }]; }, /kc_db_url sets a database option/],
+    // The operator maps an option name to KC_ + upper case, non-alphanumerics
+    // to _ (getKeycloakOptionEnvVarName): db_url and DB-URL become KC_DB_URL.
+    "option db_url": [(kc) => { kc.spec.additionalOptions.push({ name: "db_url", value: "jdbc:postgresql://h:5432/d" }); }, /option db_url \(KC_DB_URL\) must not be set/],
+    "option DB-URL from a Secret": [(kc) => { kc.spec.additionalOptions.push({ name: "DB-URL", secret: { name: "x", key: "y" } }); }, /option DB-URL \(KC_DB_URL\) must not be set/],
+    "a second properties option spelled db_url_properties": [(kc) => { kc.spec.additionalOptions.unshift({ name: "db_url_properties", value: "?" }); }, /option db_url_properties \(KC_DB_URL_PROPERTIES\) must not be set/],
+    // A KCKEY_FOO env (from envFrom, say) would map KC_FOO to db-url.
+    "a JDBC URL in any field": [(kc) => { kc.spec.env = [{ name: "KC_FOO", value: "jdbc:postgresql://h:5432/d" }]; }, /carries a JDBC URL/],
+    // podTemplate args replace the operator's "--verbose start"; CLI options
+    // take precedence over every option the CR sets.
+    "podTemplate args with --db-url": [(kc) => { pod(kc).containers[0].args = ["--verbose", "start", "--db-url=jdbc:postgresql://h:5432/d"]; }, /podTemplate args/],
+    "any podTemplate args": [(kc) => { pod(kc).containers[0].args = ["--verbose", "start"]; }, /podTemplate args/],
+    "a podTemplate command": [(kc) => { pod(kc).containers[0].command = ["/opt/keycloak/bin/kc.sh"]; }, /podTemplate command/],
+    "a podTemplate envFrom": [(kc) => { pod(kc).containers[0].envFrom = [{ secretRef: { name: "x" } }]; }, /envFrom/],
+    "a kc. system property in JAVA_OPTS_APPEND": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-Dkc.db-url-properties=?ssl=false" }]; }, /JAVA_OPTS_APPEND sets a kc\. or quarkus\. system property/],
+    "JAVA_OPTS_APPEND from a Secret": [(kc) => { pod(kc).containers[0].env = [{ name: "JAVA_OPTS_APPEND", valueFrom: { secretKeyRef: { name: "x", key: "y" } } }]; }, /JAVA_OPTS_APPEND must be a literal value/],
+    "a KCKEY_ env naming a database option": [(kc) => { kc.spec.env = [{ name: "KC_FOO", value: "x" }, { name: "KCKEY_FOO", value: "db-url" }]; }, /KCKEY_FOO maps KC_FOO to the database option db-url/],
+    "a KCKEY_ env naming config-file": [(kc) => { pod(kc).containers[0].env = [{ name: "KCKEY_FOO", value: "config-file" }]; }, /KCKEY_FOO maps KC_FOO to config-file, another configuration file/],
+    "a KCKEY_ env from a Secret": [(kc) => { kc.spec.env = [{ name: "KCKEY_FOO", secret: { name: "x", key: "y" } }]; }, /KCKEY_FOO must be a literal value/],
+    "KC_CONFIG_FILE in spec.env": [(kc) => { kc.spec.env = [{ name: "KC_CONFIG_FILE", value: "/opt/keycloak/conf/other.conf" }]; }, /spec\.env KC_CONFIG_FILE points Keycloak at another configuration file/],
+    "a config-file option": [(kc) => { kc.spec.additionalOptions.push({ name: "config-file", value: "/opt/keycloak/conf/other.conf" }); }, /option config-file \(KC_CONFIG_FILE\) points Keycloak at another configuration file/],
+    "a mount over the Keycloak conf directory": [(kc) => { pod(kc).containers[0].volumeMounts.push({ name: "conf", mountPath: "/opt/keycloak/conf/" }); }, /mount at \/opt\/keycloak\/conf\/ replaces Keycloak's configuration files/],
+    "a mount of keycloak.conf": [(kc) => { pod(kc).containers[0].volumeMounts.push({ name: "conf", mountPath: "/opt/keycloak/conf/keycloak.conf", subPath: "keycloak.conf" }); }, /mount at \/opt\/keycloak\/conf\/keycloak\.conf replaces Keycloak's configuration files/]
   };
+  const missed = [];
   for (const [name, [mutate, expected]] of Object.entries(cases)) {
     const kc = structuredClone(cr);
     mutate(kc);
     const problems = databaseTlsProblems(kc);
-    assert.ok(problems.some((p) => expected.test(p)), `${name}: expected a problem matching ${expected}, got ${JSON.stringify(problems)}`);
+    if (!problems.some((p) => expected.test(p))) missed.push(`${name}: expected a problem matching ${expected}, got ${JSON.stringify(problems)}`);
   }
+  assert.deepEqual(missed, []);
 });
 
 // Local kustomization directories an overlay is built from (resources and
