@@ -7,7 +7,7 @@
 
 ## Applied Rules
 
-- dir: `security/vault` -> `security/vault`
+- dir: `security/vault` -> `security/vault` (removed 2026-10-11: the monolith Vault seed connected to PostgreSQL with `sslmode=require`, below the platform's `verify-full` rule, and no manifest here deployed it; database credentials come from AWS Secrets Manager under `<env>/<slug>/...`)
 - dir: `security/secrets` -> `security/secrets`
 - file: `security/service-architecture/service-mesh-config.yaml` -> `security/service-architecture/service-mesh-config.yaml`
 - dir: `k8s/envoy` -> `k8s/envoy`

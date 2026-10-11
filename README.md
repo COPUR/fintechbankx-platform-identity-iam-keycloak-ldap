@@ -31,7 +31,7 @@ node scripts/ci/check-realm.mjs
 kustomize build deploy/kustomize/overlays/dev | kubeconform -strict -summary -
 ```
 
-The legacy monolith seed under `k8s/envoy/`, `security/vault/` and `security/service-architecture/` is kept for reference only; it targets the monolith namespaces (`banking-production`) and is not part of the deployable path.
+The legacy monolith seed under `k8s/envoy/` and `security/service-architecture/` is kept for reference only; it targets the monolith namespaces (`banking-production`) and is not part of the deployable path.
 
 Bu repository, FinTechBankX DDD/EDA dönüşümünde **svc-idn-keycloak-ldap** servis yetkinliğinin kaynak kodunu, kontratlarını ve operasyonel guardrail'lerini içerir.
 
