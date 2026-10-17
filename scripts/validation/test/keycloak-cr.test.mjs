@@ -99,15 +99,17 @@ const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/sp
 // the -Dsmallrye.config.locations and -Dquarkus.config.locations properties
 // Keycloak's Quarkus configuration reads (a file there can set kc.features or
 // kc.db-url), and the options that load code from a file (a Java or native
-// agent, the boot class path, a patched module, a system class loader), which
-// can register providers or rewrite Keycloak's classes. kc.sh adds
-// -agentlib:jdwp itself when KC_DEBUG or DEBUG is "true" (a debugger port
-// runs code it is sent), so those two may only be "false". This is a list of
+// agent, the boot class path, a patched or upgraded module, a system class
+// loader, a java.security file that can name a provider, a command run on a
+// crash), which can register providers, rewrite Keycloak's classes or run a
+// program. kc.sh adds -agentlib:jdwp itself when KC_DEBUG or DEBUG is "true"
+// (a debugger port runs code it is sent), so those two may only be "false"
+// (any case). This is a list of
 // known routes, not proof that no other JVM or Quarkus option reads settings
 // or code from a file.
 const JAVA_ARGS_ENV = /^(JAVA|JAVA_HOME|JAVA_OPTS.*|JAVA_ADD_OPENS|JAVA_LOCALE|(KC_)?DEBUG(_PORT|_SUSPEND)?|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
 const OPTION_FILE_LOADERS = ["-XX:VMOptionsFile", "-XX:Flags", "-Dsmallrye.config.locations", "-Dquarkus.config.locations"];
-const CODE_FILE_LOADERS = ["-javaagent:", "-agentpath:", "-agentlib:", "-Xbootclasspath", "--patch-module", "-Djava.system.class.loader"];
+const CODE_FILE_LOADERS = ["-javaagent:", "-agentpath:", "-agentlib:", "-Xbootclasspath", "--patch-module", "--upgrade-module-path", "-Djava.system.class.loader", "-Djava.security.properties", "-XX:OnError", "-XX:OnOutOfMemoryError"];
 const javaArgumentProblems = (where, e) => {
   if (!JAVA_ARGS_ENV.test(envForm(e.name))) return [];
   const value = String(e.value ?? "");
@@ -116,7 +118,7 @@ const javaArgumentProblems = (where, e) => {
     ...(value.includes("@") ? [`${where} ${e.name} contains "@": the java launcher reads a token starting with @ as a file of more arguments, which this check cannot read`] : []),
     ...OPTION_FILE_LOADERS.filter(has).map((o) => `${where} ${e.name} loads options from a file (${o}), which this check cannot read`),
     ...CODE_FILE_LOADERS.filter(has).map((o) => `${where} ${e.name} loads code from a file (${o}), which this check cannot read`),
-    ...(/^(KC_)?DEBUG$/.test(envForm(e.name)) && e.value !== "false" ? [`${where} ${e.name} is ${JSON.stringify(e.value)}: kc.sh then adds -agentlib:jdwp, a debugger port that runs code it is sent; only "false" is allowed`] : [])
+    ...(/^(KC_)?DEBUG$/.test(envForm(e.name)) && String(e.value).toLowerCase() !== "false" ? [`${where} ${e.name} is ${JSON.stringify(e.value)}: kc.sh then adds -agentlib:jdwp, a debugger port that runs code it is sent; only "false" is allowed`] : [])
   ];
 };
 
@@ -380,6 +382,10 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "-agentlib:jdwp in JAVA_OPTS": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS", value: "-agentlib:jdwp=transport=dt_socket,address=*:8787,server=y,suspend=n" }]; }, /spec\.env JAVA_OPTS loads code from a file \(-agentlib:\)/],
     "KC_DEBUG true": [(kc) => { kc.spec.env = [{ name: "KC_DEBUG", value: "true" }]; }, /spec\.env KC_DEBUG is "true": kc\.sh then adds -agentlib:jdwp/],
     "DEBUG from a Secret": [(kc) => { pod(kc).containers[0].env = [{ name: "DEBUG", valueFrom: { secretKeyRef: { name: "x", key: "y" } } }]; }, /podTemplate containers\[0\]\.env DEBUG is undefined: kc\.sh then adds -agentlib:jdwp/],
+    "--upgrade-module-path in JDK_JAVA_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JDK_JAVA_OPTIONS", value: "--upgrade-module-path=/opt/extra/mods" }]; }, /spec\.env JDK_JAVA_OPTIONS loads code from a file \(--upgrade-module-path\)/],
+    "-XX:OnError in JAVA_OPTS_APPEND": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-XX:OnError=/opt/extra/run.sh" }]; }, /spec\.env JAVA_OPTS_APPEND loads code from a file \(-XX:OnError\)/],
+    "-XX:OnOutOfMemoryError in JAVA_TOOL_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JAVA_TOOL_OPTIONS", value: "-XX:OnOutOfMemoryError=/opt/extra/run.sh" }]; }, /spec\.env JAVA_TOOL_OPTIONS loads code from a file \(-XX:OnOutOfMemoryError\)/],
+    "-Djava.security.properties in JAVA_OPTS": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS", value: "-Djava.security.properties=/opt/extra/java.security" }]; }, /spec\.env JAVA_OPTS loads code from a file \(-Djava\.security\.properties\)/],
     // kc.sh never initialises result or CONFIG_ARGS, so their environment
     // values reach the java command line through eval; any name outside the
     // allow-list is refused rather than modelled one by one.
@@ -392,9 +398,12 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
   const plain = structuredClone(cr);
   plain.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-XX:+UseZGC -Dfile.encoding=UTF-8" }, { name: "KC_FOO", value: "info" }, { name: "KCKEY_FOO", value: "log-level" }];
   assert.deepEqual(databaseTlsProblems(plain), []);
-  const debugOff = structuredClone(cr);
-  debugOff.spec.env = [{ name: "KC_DEBUG", value: "false" }];
-  assert.deepEqual(databaseTlsProblems(debugOff), []);
+  // kc.sh turns debug on only for "true"; "false" in any case stays allowed.
+  for (const off of ["false", "False", "FALSE"]) {
+    const debugOff = structuredClone(cr);
+    debugOff.spec.env = [{ name: "KC_DEBUG", value: off }, { name: "DEBUG", value: off }];
+    assert.deepEqual(databaseTlsProblems(debugOff), [], off);
+  }
   const missed = [];
   for (const [name, [mutate, expected]] of Object.entries(cases)) {
     const kc = structuredClone(cr);
