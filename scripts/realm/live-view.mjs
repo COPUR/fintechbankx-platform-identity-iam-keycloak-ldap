@@ -6,20 +6,22 @@
 // admin API) and onboard-tpp.mjs --verify-live (admin API, the import Job's
 // last step).
 import { liveTppErrors, fetchClients } from "./tpp-rules.mjs";
-import { scopedCalleesOf, serviceClientErrors } from "./service-client-rules.mjs";
+import { scopedCalleesOf, serviceClientErrors, STAFF_BROWSER_FLOW } from "./service-client-rules.mjs";
 
 // A partial export of the realm (POST
 // .../partial-export?exportClients=true&exportGroupsAndRoles=true): an object
 // with clients, clientScopes, defaultDefaultClientScopes and
-// defaultOptionalClientScopes (scope names) and roles; scopeMappings and
-// clientScopeMappings count as empty when absent (Keycloak's export leaves
-// them out then).
-const EXPORT_KEYS = ["clients", "clientScopes", "defaultDefaultClientScopes", "defaultOptionalClientScopes"];
+// defaultOptionalClientScopes (scope names), authenticationFlows (every flow,
+// subflows included, with ids; a client's flow override names a flow id) and
+// roles; scopeMappings, clientScopeMappings and authenticatorConfig count as
+// empty when absent (Keycloak's export leaves them out then).
+const EXPORT_KEYS = ["clients", "clientScopes", "defaultDefaultClientScopes", "defaultOptionalClientScopes", "authenticationFlows"];
 export function liveExportView(json) {
   if (Array.isArray(json)) throw new Error("--live-export: a GET /clients array covers the TPP rules only; export the realm with partial-export?exportClients=true&exportGroupsAndRoles=true");
   for (const k of EXPORT_KEYS) if (!Array.isArray(json?.[k])) throw new Error(`--live-export: the export lacks ${k} (partial-export?exportClients=true&exportGroupsAndRoles=true)`);
   if (!json.roles || typeof json.roles !== "object") throw new Error("--live-export: the export lacks roles (partial-export with exportGroupsAndRoles=true)");
-  return { ...Object.fromEntries(EXPORT_KEYS.map((k) => [k, json[k]])), roles: json.roles, scopeMappings: json.scopeMappings || [], clientScopeMappings: json.clientScopeMappings || {} };
+  return { ...Object.fromEntries(EXPORT_KEYS.map((k) => [k, json[k]])), roles: json.roles, scopeMappings: json.scopeMappings || [], clientScopeMappings: json.clientScopeMappings || {},
+    authenticatorConfig: json.authenticatorConfig || [] };
 }
 
 // The same view from the admin API (view-clients and view-realm). Client-role
@@ -27,7 +29,11 @@ export function liveExportView(json) {
 // the roles of that callee in each client's and client scope's effective role
 // scope, as Keycloak's hasScope gives them (fullScopeAllowed, composites and a
 // client's own roles applied). calleeRoleScopes returns these unchanged, so
-// both modes apply one model.
+// both modes apply one model. The staff sign-in rule reads the realm roles,
+// the top-level flows and the tree of STAFF_BROWSER_FLOW: its subflows by id
+// (GET /authentication/flows/{id}) and its authenticator configs by id, both
+// taken from the flow's flattened executions, so the view has the shape of an
+// export.
 export async function fetchLiveView({ fetch = globalThis.fetch, baseUrl, token, realm, registry }) {
   const base = `${String(baseUrl).replace(/\/+$/, "")}/admin/realms/${encodeURIComponent(realm)}`;
   const get = async (p) => {
@@ -44,10 +50,18 @@ export async function fetchLiveView({ fetch = globalThis.fetch, baseUrl, token, 
     clientScopes,
     defaultDefaultClientScopes: names(await get("/default-default-client-scopes")),
     defaultOptionalClientScopes: names(await get("/default-optional-client-scopes")),
-    roles: { client: {} },
+    roles: { realm: await get("/roles"), client: {} },
     scopeMappings: [],
-    clientScopeMappings: {}
+    clientScopeMappings: {},
+    authenticationFlows: await get("/authentication/flows"),
+    authenticatorConfig: []
   };
+  if (view.authenticationFlows.some((f) => f.alias === STAFF_BROWSER_FLOW)) {
+    for (const row of await get(`/authentication/flows/${encodeURIComponent(STAFF_BROWSER_FLOW)}/executions`)) {
+      if (row.authenticationFlow === true) view.authenticationFlows.push(await get(`/authentication/flows/${encodeURIComponent(row.flowId)}`));
+      if (row.authenticationConfig) view.authenticatorConfig.push(await get(`/authentication/config/${encodeURIComponent(row.authenticationConfig)}`));
+    }
+  }
   for (const callee of scopedCalleesOf(registry)) {
     const c = clients.find((x) => x.clientId === callee);
     if (!c) continue; // reported as missing by serviceClientErrors

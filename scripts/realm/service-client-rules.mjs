@@ -246,6 +246,102 @@ const authorizationServicesErrors = (c) => (c.clientId !== FGAP_V2_CLIENT && (!a
 // client role of the user (or service account) would reach the token.
 export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c.clientId}: fullScopeAllowed must be false (Keycloak treats a missing value as true)`]);
 
+// Staff sign-in (DevSecOps 2026-10-17, formerly REALM_AS_CODE gap 5). Every
+// registry channel client with userType staff (staff web) binds its browser
+// flow (authenticationFlowBindingOverrides.browser: the flow alias in the
+// realm file, which keycloak-config-cli resolves; the flow id in an export
+// and the admin API) to STAFF_BROWSER_FLOW. That flow signs the user in as
+// Keycloak's built-in browser flow does (SSO cookie, else username and
+// password, then OTP when the user has one configured; no Kerberos, no
+// identity provider) and then runs a conditional subflow whose conditions all
+// hold only for a user with none of the staff roles: one negated
+// conditional-user-role per role (conditions of one subflow are ANDed), then
+// deny-access-authenticator. The check runs after sign-in, so an SSO session
+// started at the customer web client is refused at staff web too. Keycloak's
+// role condition (ConditionalRoleAuthenticator, 26.7.5) returns false for a
+// role name it cannot resolve whatever negate says, so one unknown role turns
+// the deny off for every user: the gate requires the exact flow tree (order,
+// requirements, authenticators, configs), negate "true" and every staff role
+// to exist as a realm role. Staff roles reach users through the LDAP groups
+// /staff/fbx-* (composites and group roles count, as in Keycloak's hasRole).
+export const STAFF_ROLES = ["banker", "loan_officer", "admin", "auditor", "compliance_officer"];
+export const STAFF_BROWSER_FLOW = "fbx-staff-browser";
+export function staffBrowserFlow(roles = STAFF_ROLES) {
+  const A = STAFF_BROWSER_FLOW;
+  const step = (authenticator, requirement, priority, authenticatorConfig) => ({ authenticator, authenticatorFlow: false, requirement, priority, userSetupAllowed: false, ...(authenticatorConfig ? { authenticatorConfig } : {}) });
+  const sub = (flowAlias, requirement, priority) => ({ authenticatorFlow: true, flowAlias, requirement, priority, userSetupAllowed: false });
+  const flow = (alias, topLevel, description, authenticationExecutions) => ({ alias, description, providerId: "basic-flow", topLevel, builtIn: false, authenticationExecutions });
+  const notRole = (r) => `${A} not ${r}`;
+  return {
+    authenticationFlows: [
+      flow(A, true, "Staff web browser flow: sign in, then deny any user without a staff role", [sub(`${A} sign-in`, "REQUIRED", 10), sub(`${A} staff only`, "CONDITIONAL", 20)]),
+      flow(`${A} sign-in`, false, "SSO cookie, else username and password", [step("auth-cookie", "ALTERNATIVE", 10), sub(`${A} forms`, "ALTERNATIVE", 20)]),
+      flow(`${A} forms`, false, "Username and password, then OTP when the user has one", [step("auth-username-password-form", "REQUIRED", 10), sub(`${A} OTP`, "CONDITIONAL", 20)]),
+      flow(`${A} OTP`, false, "OTP when the user has one configured", [step("conditional-user-configured", "REQUIRED", 10), step("auth-otp-form", "REQUIRED", 20)]),
+      flow(`${A} staff only`, false, `Deny access to a user without any of ${roles.join(", ")}`,
+        [...roles.map((r, i) => step("conditional-user-role", "REQUIRED", 10 * (i + 1), notRole(r))), step("deny-access-authenticator", "REQUIRED", 10 * (roles.length + 1))])
+    ],
+    authenticatorConfig: roles.map((r) => ({ alias: notRole(r), config: { condUserRole: r, negate: "true" } }))
+  };
+}
+
+// The flow tree as Keycloak runs it: executions in priority order (Keycloak
+// sorts by priority; keycloak-config-cli creates subflow executions in list
+// order with a priority of its own, so list and priority order must agree),
+// each a subflow (by alias) or an authenticator with its config (by alias).
+// Ids, descriptions and the priority values themselves do not count.
+function flowTree(view, alias, errs, seen = []) {
+  const found = (view.authenticationFlows || []).filter((f) => f.alias === alias);
+  if (found.length !== 1 || seen.includes(alias)) return { missing: alias };
+  const f = found[0];
+  const execs = f.authenticationExecutions || [];
+  const sorted = [...execs].sort((a, b) => Number(a.priority) - Number(b.priority));
+  if (new Set(execs.map((e) => Number(e.priority))).size !== execs.length) errs.add(`flow ${alias}: two executions share priority; Keycloak's order between them is undefined`);
+  else if (sorted.some((e, i) => e !== execs[i])) errs.add(`flow ${alias}: executions are not listed in priority order (keycloak-config-cli creates subflows in list order, Keycloak runs by priority)`);
+  const config = (a) => {
+    const cs = (view.authenticatorConfig || []).filter((c) => c.alias === a);
+    if (cs.length > 1) errs.add(`flow ${STAFF_BROWSER_FLOW}: authenticator config alias ${a} is not unique`);
+    return cs.length === 1 ? Object.fromEntries(Object.entries(cs[0].config || {}).map(([k, v]) => [k, String(v)]).sort()) : { missing: a };
+  };
+  return {
+    providerId: f.providerId,
+    steps: sorted.map((e) => (e.authenticatorFlow === true
+      ? { requirement: e.requirement, flow: flowTree(view, e.flowAlias, errs, [...seen, alias]) }
+      : { requirement: e.requirement, authenticator: e.authenticator, ...(e.authenticatorConfig !== undefined ? { config: config(e.authenticatorConfig) } : {}) }))
+  };
+}
+const describeTree = (t) => (t.missing !== undefined ? `<missing ${t.missing}>`
+  : `${t.providerId === "basic-flow" ? "" : `${t.providerId} `}[${t.steps.map((s) => `${s.requirement} ${s.flow ? describeTree(s.flow)
+    : s.authenticator + (s.config ? `{${Object.entries(s.config).map(([k, v]) => `${k}=${v}`).join(",")}}` : "")}`).join(", ")}]`);
+
+export function staffSignInErrors(realm, registry) {
+  const errs = new Set();
+  const flows = realm.authenticationFlows || [];
+  const A = STAFF_BROWSER_FLOW;
+  if (!flows.some((f) => f.alias === A)) {
+    errs.add(`flow ${A} missing (staff web signs in only users with a staff role through it)`);
+  } else {
+    const want = describeTree(flowTree(staffBrowserFlow(), A, new Set()));
+    const got = describeTree(flowTree(realm, A, errs));
+    if (got !== want) errs.add(`flow ${A}: differs from the realm-as-code (sign in, then deny any user without one of ${STAFF_ROLES.join(", ")}): got ${got}`);
+    const realmRoles = new Set((realm.roles?.realm || []).map((r) => r.name));
+    for (const r of STAFF_ROLES) {
+      if (!realmRoles.has(r)) errs.add(`flow ${A}: realm role ${r} does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`);
+    }
+  }
+  const clients = new Map((realm.clients || []).map((c) => [c.clientId, c]));
+  for (const entry of (registry.channelClients || []).filter((c) => c.userType === "staff")) {
+    const c = clients.get(entry.clientId);
+    if (!c) continue; // reported as missing by serviceClientErrors
+    const v = c.authenticationFlowBindingOverrides?.browser;
+    const target = v === undefined ? undefined : flows.find((f) => f.id !== undefined && f.id === v) || flows.find((f) => f.alias === v);
+    if (target?.alias !== A || target.topLevel === false) {
+      errs.add(`${c.clientId}: authenticationFlowBindingOverrides.browser must be the flow ${A} (got ${v === undefined ? "none" : JSON.stringify(v)}); without it any realm user, customers included, signs in to it`);
+    }
+  }
+  return [...errs];
+}
+
 export function serviceClientErrors(realm, registry) {
   const errors = [];
   const err = (m) => errors.push(m);
@@ -344,5 +440,8 @@ export function serviceClientErrors(realm, registry) {
       err(`${callee}: client roles ${h.roles.join(",")} are in the role scope of ${target}${tail}`);
     }
   }
+
+  // Who can obtain staff web's audiences (the ledger's among them): staff only.
+  for (const m of staffSignInErrors(realm, registry)) err(m);
   return errors;
 }

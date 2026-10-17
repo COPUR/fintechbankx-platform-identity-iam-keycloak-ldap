@@ -147,16 +147,22 @@ test("README.md counts every service client of the registry", () => {
   for (const n of counts) assert.equal(n, registry.clients.length, "README.md service client count");
 });
 
-// Who can obtain staff web's ledger audience: any realm user who can sign in
-// (a customer's staff-web token carries it, with no realm role and no
-// customer_id); staff web's role scope and the ledger's @PreAuthorize gate it.
-test("REALM_AS_CODE.md says any realm user can obtain staff web's ledger audience, and what gates it", () => {
+// Who can obtain staff web's ledger audience: only users with a staff role
+// (DevSecOps 2026-10-17): staff web's browser flow fbx-staff-browser denies
+// every other user after sign-in, an SSO session from the customer web client
+// included; the gate checks the flow in all three modes and in the import Job.
+test("REALM_AS_CODE.md says staff web signs in only users with a staff role, and lists gap 5 as checked", () => {
   const ledger = realmDoc.split("\n").find((l) => l.trim().startsWith("The accounts ledger audience reaches"));
   assert.ok(ledger, "no ledger audience paragraph");
-  assert.match(ledger, /any realm user[^.]*customers included[^.]*`fintechbankx-staff-web`|any realm user[^.]*`fintechbankx-staff-web`[^.]*customers included/);
+  assert.doesNotMatch(ledger, /any realm user, customers included, can sign in/);
+  assert.match(ledger, /only users with a staff role[^.]*`fintechbankx-staff-web`|`fintechbankx-staff-web`[^.]*only users with a staff role/);
+  assert.match(ledger, /`fbx-staff-browser`/);
   assert.match(ledger, /role scope[^.]*`@PreAuthorize`/);
-  const gaps = realmDoc.slice(realmDoc.indexOf("Known gap, not checked"));
-  assert.match(gaps.slice(0, gaps.indexOf("\n")), /\(5\)[^.]*any realm user/);
+  const line = realmDoc.split("\n").find((l) => l.includes("Known gap, not checked"));
+  const checked = line.slice(line.indexOf("Checked since 2026-10-17"), line.indexOf("Known gap, not checked"));
+  const open = line.slice(line.indexOf("Known gap, not checked"));
+  assert.match(checked, /\(5\)[^.]*`fintechbankx-staff-web`[^.]*`fbx-staff-browser`/);
+  assert.doesNotMatch(open, /\(5\)/);
 });
 
 // onboard-tpp.mjs --verify-live always runs the service-client rules; --registry only picks the file.

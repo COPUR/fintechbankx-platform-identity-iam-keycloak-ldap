@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { STAFF_BROWSER_FLOW, STAFF_ROLES, staffBrowserFlow } from "./service-client-rules.mjs";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const checkOnly = process.argv.includes("--check");
 const manifest = JSON.parse(fs.readFileSync(`${repo}/realm/service-clients.json`, "utf8"));
@@ -243,7 +244,8 @@ const serviceClients = manifest.clients.map((c) => ({
 // the staff client maps only the staff roles, has short sessions and no
 // optional scopes but its audience scopes. Offline tokens only where the
 // registry says offlineAccess (mobile), with client offline-session limits.
-const STAFF_ROLES = ["banker", "loan_officer", "admin", "auditor", "compliance_officer"];
+// The staff client signs in only users with a staff role: its browser flow is
+// STAFF_BROWSER_FLOW (service-client-rules.mjs, checked there in all modes).
 const rolesOfUserType = (t) => (t === "staff" ? STAFF_ROLES : ["customer"]);
 const publicClient = (clientId, name, redirectEnv, originEnv, logoutEnv) => {
   const entry = channel[clientId];
@@ -278,6 +280,7 @@ const publicClient = (clientId, name, redirectEnv, originEnv, logoutEnv) => {
     logoutEnv ? { "post.logout.redirect.uris": env(logoutEnv) } : {},
     staff ? { "client.session.idle.timeout": "900", "client.session.max.lifespan": "28800" } : {},
     entry.offlineAccess ? { "client.offline.session.idle.timeout": "1209600", "client.offline.session.max.lifespan": "2592000" } : {}),
+    ...(staff ? { authenticationFlowBindingOverrides: { browser: STAFF_BROWSER_FLOW } } : {}),
     protocolMappers: audienceMappers(mappedAudiences(entry.audiences)),
     defaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email", ...(staff ? [] : [CUSTOMER_ID_SCOPE])],
     optionalClientScopes: [...(entry.offlineAccess ? ["offline_access"] : []), ...audienceScopesOf(entry.audiences)]
@@ -440,6 +443,9 @@ const realm = {
     },
     { name: "customers", path: "/customers", realmRoles: ["customer"], attributes: {}, subGroups: [] }
   ],
+
+  // Staff web's browser flow and the configs of its role conditions.
+  ...staffBrowserFlow(STAFF_ROLES),
 
   clients: [
     ...serviceClients,

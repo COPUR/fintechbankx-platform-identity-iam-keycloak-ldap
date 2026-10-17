@@ -418,6 +418,193 @@
       "subGroups": []
     }
   ],
+  "authenticationFlows": [
+    {
+      "alias": "fbx-staff-browser",
+      "description": "Staff web browser flow: sign in, then deny any user without a staff role",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-staff-browser sign-in",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-staff-browser staff only",
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-staff-browser sign-in",
+      "description": "SSO cookie, else username and password",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-staff-browser forms",
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-staff-browser forms",
+      "description": "Username and password, then OTP when the user has one",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-password-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-staff-browser OTP",
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-staff-browser OTP",
+      "description": "OTP when the user has one configured",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-user-configured",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-staff-browser staff only",
+      "description": "Deny access to a user without any of banker, loan_officer, admin, auditor, compliance_officer",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser not banker"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser not loan_officer"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser not admin"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser not auditor"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 50,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser not compliance_officer"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 60,
+          "userSetupAllowed": false
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "fbx-staff-browser not banker",
+      "config": {
+        "condUserRole": "banker",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser not loan_officer",
+      "config": {
+        "condUserRole": "loan_officer",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser not admin",
+      "config": {
+        "condUserRole": "admin",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser not auditor",
+      "config": {
+        "condUserRole": "auditor",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser not compliance_officer",
+      "config": {
+        "condUserRole": "compliance_officer",
+        "negate": "true"
+      }
+    }
+  ],
   "clients": [
     {
       "clientId": "svc-ln-loan-lifecycle",
@@ -1248,6 +1435,9 @@
         "post.logout.redirect.uris": "$(env:FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI)",
         "client.session.idle.timeout": "900",
         "client.session.max.lifespan": "28800"
+      },
+      "authenticationFlowBindingOverrides": {
+        "browser": "fbx-staff-browser"
       },
       "protocolMappers": [
         {

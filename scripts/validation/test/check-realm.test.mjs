@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import * as realmCheck from "../../ci/check-realm.mjs";
-import { STOCK_PROTOCOL_MAPPERS } from "../../realm/service-client-rules.mjs";
+import { STOCK_PROTOCOL_MAPPERS, STAFF_ROLES as FLOW_STAFF_ROLES } from "../../realm/service-client-rules.mjs";
 const { checkRealm, loadFromRepo, secretEnvName } = realmCheck;
 const tppClientErrors = (...args) => realmCheck.tppClientErrors(...args);
 
@@ -565,6 +565,12 @@ function liveRealm() {
   // the resource server of the admin permissions, with Authorization Services.
   builtIn.push({ clientId: "admin-permissions", fullScopeAllowed: false, serviceAccountsEnabled: true, authorizationServicesEnabled: true, attributes: { realm_client: "false" },
     authorizationSettings: { policyEnforcementMode: "ENFORCING", decisionStrategy: "UNANIMOUS", resources: [], policies: [], scopes: [] }, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [] });
+  // Keycloak's built-in browser flow (26.7.5, as the admin API lists it); the
+  // export and the admin API name a client's flow override by flow id.
+  const builtInFlows = [{ alias: "browser", description: "Browser based authentication", providerId: "basic-flow", topLevel: true, builtIn: true,
+    authenticationExecutions: [{ authenticator: "auth-cookie", authenticatorFlow: false, requirement: "ALTERNATIVE", priority: 10, userSetupAllowed: false }] }];
+  const flows = [...realm.authenticationFlows, ...builtInFlows].map((f) => ({ id: `id-${f.alias}`, ...f }));
+  const flowId = (alias) => flows.find((f) => f.alias === alias)?.id ?? alias;
   const builtInScopes = [
     { name: "basic", protocol: "openid-connect", attributes: {}, protocolMappers: [] },
     { name: "roles", protocol: "openid-connect", attributes: {}, protocolMappers: [{ name: "audience resolve", protocol: "openid-connect", protocolMapper: "oidc-audience-resolve-mapper", config: {} }] },
@@ -572,7 +578,10 @@ function liveRealm() {
   ];
   return {
     realm: "fintechbankx",
-    clients: [...realm.clients, ...builtIn].map((c) => ({ id: `id-${c.clientId}`, ...c })),
+    clients: [...realm.clients, ...builtIn].map((c) => ({ id: `id-${c.clientId}`, ...c,
+      ...(c.authenticationFlowBindingOverrides ? { authenticationFlowBindingOverrides: Object.fromEntries(Object.entries(c.authenticationFlowBindingOverrides).map(([k, v]) => [k, flowId(v)])) } : {}) })),
+    authenticationFlows: flows,
+    authenticatorConfig: realm.authenticatorConfig.map((c) => ({ id: `id-${c.alias}`, ...c })),
     clientScopes: [...realm.clientScopes, ...builtInScopes].map((sc) => ({ id: `id-${sc.name}`, ...sc })),
     defaultDefaultClientScopes: [...realm.defaultDefaultClientScopes],
     defaultOptionalClientScopes: ["offline_access"],
@@ -628,7 +637,19 @@ function adminApi(live) {
     if (p === "/client-scopes") return json(live.clientScopes);
     if (p === "/default-default-client-scopes") return json(live.defaultDefaultClientScopes.map((name) => ({ id: `id-${name}`, name })));
     if (p === "/default-optional-client-scopes") return json(live.defaultOptionalClientScopes.map((name) => ({ id: `id-${name}`, name })));
-    let m = p.match(/^\/clients\/([^/]+)\/roles$/);
+    if (p === "/roles") return json(live.roles.realm.map((r) => ({ id: `id-${r.name}`, name: r.name, composite: !!r.composite, clientRole: false })));
+    if (p === "/authentication/flows") return json(live.authenticationFlows.filter((f) => f.topLevel));
+    let m = p.match(/^\/authentication\/flows\/([^/]+)\/executions$/);
+    if (m) {
+      const f = live.authenticationFlows.find((x) => x.alias === decodeURIComponent(m[1]));
+      return f ? json(flattenFlow(live, f, 0)) : new Response("not found", { status: 404 });
+    }
+    m = p.match(/^\/authentication\/(flows|config)\/([^/]+)$/);
+    if (m) {
+      const x = byId(m[1] === "flows" ? live.authenticationFlows : live.authenticatorConfig, m[2]);
+      return x ? json(x) : new Response("not found", { status: 404 });
+    }
+    m = p.match(/^\/clients\/([^/]+)\/roles$/);
     if (m) return json(live.roles.client[byId(live.clients, m[1]).clientId] || []);
     m = p.match(/^\/(clients|client-scopes)\/([^/]+)\/scope-mappings\/clients\/([^/]+)\/composite$/);
     if (m) {
@@ -638,6 +659,22 @@ function adminApi(live) {
     return new Response("not found", { status: 404 });
   };
   return { fetch, urls };
+}
+// GET /authentication/flows/{alias}/executions (Keycloak 26.7.5): the flow's
+// executions depth first, ordered by priority, a subflow row followed by its
+// own; a subflow row carries flowId, an authenticator row its providerId and
+// the id of its authenticator config.
+function flattenFlow(live, flow, level) {
+  const ordered = [...flow.authenticationExecutions].sort((a, b) => a.priority - b.priority);
+  return ordered.flatMap((e, index) => {
+    const base = { id: `exec-${flow.alias}-${index}`, requirement: e.requirement, level, index, priority: e.priority };
+    if (e.authenticatorFlow) {
+      const sub = live.authenticationFlows.find((f) => f.alias === e.flowAlias);
+      return [{ ...base, displayName: e.flowAlias, authenticationFlow: true, flowId: sub?.id }, ...(sub ? flattenFlow(live, sub, level + 1) : [])];
+    }
+    const config = live.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig);
+    return [{ ...base, displayName: e.authenticator, providerId: e.authenticator, ...(config ? { authenticationConfig: config.id, alias: config.alias } : {}) }];
+  });
 }
 function withExportFile(exported, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "live-"));
@@ -899,6 +936,111 @@ test("live: staff web holds the ledger scope exactly there, the same through the
     mutate((id) => liveClient(live, id), live);
     const errors = await liveErrors(live);
     for (const e of expected) assert.ok(errors.includes(e), `${name}: ${e} not in\n${errors.join("\n")}`);
+  }
+});
+
+// Staff sign-in (DevSecOps 2026-10-17, REALM_AS_CODE gap 5): staff web binds
+// its browser flow to fbx-staff-browser, which signs the user in as the
+// built-in browser flow does (cookie, else username and password, then OTP if
+// the user has one) and then denies every user who holds none of the staff
+// roles. Keycloak's role condition (conditional-user-role, 26.7.5) is false
+// for a role name it cannot find, whatever negate says, so one unknown role
+// lets every user through: the gate requires the exact flow, negate "true" and
+// every staff role to exist.
+const STAFF_FLOW = "fbx-staff-browser";
+const flowOf = (realm, alias) => realm.authenticationFlows.find((f) => f.alias === alias);
+const staffOnly = (realm) => flowOf(realm, `${STAFF_FLOW} staff only`);
+const staffConfig = (realm, role) => realm.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} not ${role}`);
+const flowDiffers = `flow ${STAFF_FLOW}: differs from the realm-as-code`;
+const overrideRefused = `${STAFF_WEB}: authenticationFlowBindingOverrides.browser must be the flow ${STAFF_FLOW}`;
+
+test("staff web signs in only users with a staff role: browser flow fbx-staff-browser, sign-in first, then deny without a staff role", () => {
+  const { realm, registry } = fresh();
+  const staffClients = registry.channelClients.filter((c) => c.userType === "staff").map((c) => c.clientId);
+  assert.deepEqual(staffClients, [STAFF_WEB]);
+  assert.deepEqual(client({ realm }, STAFF_WEB).authenticationFlowBindingOverrides, { browser: STAFF_FLOW });
+  for (const id of ["fintechbankx-web", "fintechbankx-mobile"]) assert.equal(client({ realm }, id).authenticationFlowBindingOverrides, undefined, id);
+  const steps = (alias) => flowOf(realm, alias).authenticationExecutions.map((e) => `${e.requirement} ${e.authenticatorFlow ? `flow:${e.flowAlias}` : e.authenticator}`);
+  assert.equal(flowOf(realm, STAFF_FLOW).topLevel, true);
+  assert.deepEqual(steps(STAFF_FLOW), [`REQUIRED flow:${STAFF_FLOW} sign-in`, `CONDITIONAL flow:${STAFF_FLOW} staff only`]);
+  assert.deepEqual(steps(`${STAFF_FLOW} sign-in`), ["ALTERNATIVE auth-cookie", `ALTERNATIVE flow:${STAFF_FLOW} forms`]);
+  assert.deepEqual(steps(`${STAFF_FLOW} forms`), ["REQUIRED auth-username-password-form", `CONDITIONAL flow:${STAFF_FLOW} OTP`]);
+  assert.deepEqual(steps(`${STAFF_FLOW} OTP`), ["REQUIRED conditional-user-configured", "REQUIRED auth-otp-form"]);
+  assert.deepEqual(steps(`${STAFF_FLOW} staff only`), [...STAFF.map(() => "REQUIRED conditional-user-role"), "REQUIRED deny-access-authenticator"]);
+  // One negated condition per role staff web maps (its role scope), so the
+  // deny runs only for a user who has none of them.
+  const conditions = staffOnly(realm).authenticationExecutions.filter((e) => e.authenticator === "conditional-user-role")
+    .map((e) => realm.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig).config);
+  assert.deepEqual(conditions.map((c) => c.condUserRole).sort(), scopeRoles({ realm }, STAFF_WEB));
+  // One staff role list: the LDAP groups of check-realm.mjs and the flow's.
+  assert.deepEqual(Object.values(realmCheck.STAFF_ROLE_GROUPS), FLOW_STAFF_ROLES);
+  for (const c of conditions) assert.deepEqual(c, { condUserRole: c.condUserRole, negate: "true" });
+  for (const f of realm.authenticationFlows) assert.equal(f.providerId, "basic-flow", f.alias);
+});
+
+test("the gate refuses staff web without the staff flow, and any flow that lets a user without a staff role through", () => {
+  const cases = [
+    ["no override", (r) => { delete client({ realm: r }, STAFF_WEB).authenticationFlowBindingOverrides; }, overrideRefused],
+    ["override to the built-in browser flow", (r) => { client({ realm: r }, STAFF_WEB).authenticationFlowBindingOverrides = { browser: "browser" }; }, overrideRefused],
+    ["override to an unknown flow id", (r) => { client({ realm: r }, STAFF_WEB).authenticationFlowBindingOverrides = { browser: "0b1c" }; }, overrideRefused],
+    ["flow missing", (r) => { r.authenticationFlows = r.authenticationFlows.filter((f) => f.alias !== STAFF_FLOW); }, `flow ${STAFF_FLOW} missing`],
+    ["negate false", (r) => { staffConfig(r, "auditor").config.negate = "false"; }, flowDiffers],
+    ["negate missing", (r) => { delete staffConfig(r, "banker").config.negate; }, flowDiffers],
+    ["a role name that is not a realm role", (r) => { staffConfig(r, "banker").config.condUserRole = "bankers"; }, flowDiffers],
+    ["a client role instead of the realm role", (r) => { staffConfig(r, "admin").config.condUserRole = "realm-management.realm-admin"; }, flowDiffers],
+    ["a condition dropped", (r) => { staffOnly(r).authenticationExecutions.splice(0, 1); }, flowDiffers],
+    ["a condition disabled", (r) => { staffOnly(r).authenticationExecutions[2].requirement = "DISABLED"; }, flowDiffers],
+    ["deny disabled", (r) => { staffOnly(r).authenticationExecutions.at(-1).requirement = "DISABLED"; }, flowDiffers],
+    ["deny replaced", (r) => { staffOnly(r).authenticationExecutions.at(-1).authenticator = "allow-access-authenticator"; }, flowDiffers],
+    ["staff check alternative", (r) => { flowOf(r, STAFF_FLOW).authenticationExecutions[1].requirement = "ALTERNATIVE"; }, flowDiffers],
+    ["staff check before sign-in", (r) => { const e = flowOf(r, STAFF_FLOW).authenticationExecutions; [e[0].priority, e[1].priority] = [e[1].priority, e[0].priority]; }, flowDiffers],
+    ["an alternative next to sign-in", (r) => { flowOf(r, STAFF_FLOW).authenticationExecutions.push({ authenticator: "auth-cookie", authenticatorFlow: false, requirement: "ALTERNATIVE", priority: 5, userSetupAllowed: false }); }, flowDiffers],
+    ["an extra sign-in route", (r) => { flowOf(r, `${STAFF_FLOW} sign-in`).authenticationExecutions.push({ authenticator: "identity-provider-redirector", authenticatorFlow: false, requirement: "ALTERNATIVE", priority: 50, userSetupAllowed: false }); }, flowDiffers],
+    ["two executions with one priority", (r) => { const e = staffOnly(r).authenticationExecutions; e[1].priority = e[0].priority; }, `flow ${STAFF_FLOW} staff only: two executions share priority`],
+    ["two configs with one alias", (r) => { r.authenticatorConfig.push({ alias: `${STAFF_FLOW} not banker`, config: { condUserRole: "customer", negate: "true" } }); }, `flow ${STAFF_FLOW}: authenticator config alias ${STAFF_FLOW} not banker is not unique`],
+    ["a staff role removed from the realm", (r) => { r.roles.realm = r.roles.realm.filter((x) => x.name !== "auditor"); },
+      `flow ${STAFF_FLOW}: realm role auditor does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const input = fresh();
+    mutate(input.realm);
+    const errors = checkRealm(input);
+    assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+  // The override may name the flow by alias (realm file) or by id (export).
+  const byId = fresh();
+  flowOf(byId.realm, STAFF_FLOW).id = "4d2f3c1e-0000-4000-8000-000000000001";
+  client(byId, STAFF_WEB).authenticationFlowBindingOverrides = { browser: "4d2f3c1e-0000-4000-8000-000000000001" };
+  assert.deepEqual(checkRealm(byId), []);
+});
+
+test("live: staff web's sign-in flow, the same through the admin API and a partial export", async () => {
+  const liveFlow = (l, alias) => l.authenticationFlows.find((f) => f.alias === alias);
+  const cases = [
+    ["override removed", (l) => { delete liveClient(l, STAFF_WEB).authenticationFlowBindingOverrides; }, overrideRefused],
+    ["override to the built-in browser flow", (l) => { liveClient(l, STAFF_WEB).authenticationFlowBindingOverrides = { browser: "id-browser" }; }, overrideRefused],
+    ["override to a subflow", (l) => { liveClient(l, STAFF_WEB).authenticationFlowBindingOverrides = { browser: `id-${STAFF_FLOW} sign-in` }; }, overrideRefused],
+    ["staff flow deleted", (l) => { l.authenticationFlows = l.authenticationFlows.filter((f) => !f.alias.startsWith(STAFF_FLOW)); }, `flow ${STAFF_FLOW} missing`],
+    ["negate flipped", (l) => { l.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} not admin`).config.negate = "false"; }, flowDiffers],
+    ["deny disabled", (l) => { liveFlow(l, `${STAFF_FLOW} staff only`).authenticationExecutions.at(-1).requirement = "DISABLED"; }, flowDiffers],
+    ["staff check alternative", (l) => { liveFlow(l, STAFF_FLOW).authenticationExecutions[1].requirement = "ALTERNATIVE"; }, flowDiffers],
+    ["realm role deleted", (l) => { l.roles.realm = l.roles.realm.filter((r) => r.name !== "compliance_officer"); },
+      `flow ${STAFF_FLOW}: realm role compliance_officer does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const live = liveRealm();
+    mutate(live);
+    const errors = await liveErrors(live);
+    assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+  // The admin API answers the override with a flow id; the check reads the
+  // flow tree, its configs and the realm roles.
+  const api = adminApi(liveRealm());
+  const ok = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
+  assert.deepEqual(ok.errors, []);
+  for (const p of ["/roles", "/authentication/flows", `/authentication/flows/${STAFF_FLOW}/executions`, `/authentication/flows/${encodeURIComponent(`id-${STAFF_FLOW} staff only`)}`,
+    `/authentication/config/${encodeURIComponent(`id-${STAFF_FLOW} not banker`)}`]) {
+    assert.ok(api.urls.some((u) => u.startsWith(`http://kc.test/admin/realms/fintechbankx${p}`)), `${p} not fetched: ${api.urls.join(" ")}`);
   }
 });
 
@@ -1215,11 +1357,11 @@ test("live: drift from the service-client rules fails, through the admin API and
   assert.ok(api.urls.includes(`http://kc.test/admin/realms/fintechbankx/client-scopes/id-roles/scope-mappings/clients/id-${LEDGER}/composite`), api.urls.join(" "));
 });
 
-test("live: --live-export needs a partial export with clients, client scopes, realm default scopes and roles", async () => {
+test("live: --live-export needs a partial export with clients, client scopes, realm default scopes, roles and authentication flows", async () => {
   const live = liveRealm();
   await assert.rejects(liveFromFile(live.clients), /--live-export: a GET \/clients array covers the TPP rules only/);
   assert.throws(() => runLiveExport(live.clients), /realm-check --live: FAILED: --live-export: a GET \/clients array covers the TPP rules only/);
-  for (const key of ["clients", "clientScopes", "defaultDefaultClientScopes", "defaultOptionalClientScopes", "roles"]) {
+  for (const key of ["clients", "clientScopes", "defaultDefaultClientScopes", "defaultOptionalClientScopes", "roles", "authenticationFlows"]) {
     const partial = liveRealm();
     delete partial[key];
     await assert.rejects(liveFromFile(partial), new RegExp(`--live-export: the export lacks ${key}`), key);
@@ -1546,7 +1688,9 @@ test("the Job's tpp-onboarding step against a mock admin API passes the complian
     ["aud claim mapper in the built-in scope roles", (l) => liveScope(l, "roles").protocolMappers.push(audClaimMapper()), audRouteErrors("client scope roles", audClaimMapper())],
     ["script mapper on admin-cli", (l) => liveClient(l, "admin-cli").protocolMappers.push(scriptMapper("script-aud.js")), notStock("admin-cli", scriptMapper("script-aud.js"))],
     ["standard token exchange on svc-ln-loan-lifecycle", (l) => { liveClient(l, "svc-ln-loan-lifecycle").attributes[TOKEN_EXCHANGE] = "true"; }, exchangeRefused("svc-ln-loan-lifecycle", "true")],
-    ["Authorization Services on the ledger client", (l) => { liveClient(l, LEDGER).authorizationServicesEnabled = true; }, UMA(LEDGER)]
+    ["Authorization Services on the ledger client", (l) => { liveClient(l, LEDGER).authorizationServicesEnabled = true; }, UMA(LEDGER)],
+    ["staff web signs in any realm user", (l) => { delete liveClient(l, STAFF_WEB).authenticationFlowBindingOverrides; }, overrideRefused],
+    ["staff flow lets a customer through", (l) => { l.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} not banker`).config.negate = "false"; }, flowDiffers]
   ];
   for (const [name, mutate, expected] of bypasses) {
     const live = liveRealm();
