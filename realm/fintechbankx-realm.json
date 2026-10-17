@@ -149,6 +149,16 @@
           }
         }
       ]
+    },
+    {
+      "name": "fbx-staff-channel",
+      "description": "Marks the staff channel clients: the reset credentials flow runs its staff check only for clients with this default scope. No mappers; not in the token's scope claim.",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": []
     }
   ],
   "defaultDefaultClientScopes": [
@@ -566,6 +576,137 @@
           "userSetupAllowed": false
         }
       ]
+    },
+    {
+      "alias": "fbx-reset-credentials",
+      "description": "Reset credentials (the built-in flow), with the staff check for staff channel clients after the e-mail step",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "reset-credentials-choose-user",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-credential-email",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-reset-credentials staff only",
+          "requirement": "CONDITIONAL",
+          "priority": 30,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-password",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-reset-credentials OTP",
+          "requirement": "CONDITIONAL",
+          "priority": 50,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-reset-credentials staff only",
+      "description": "At a client with fbx-staff-channel, deny access to a user without any of banker, loan_officer, admin, auditor, compliance_officer",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-client-scope",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials staff channel"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials not banker"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials not loan_officer"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials not admin"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 50,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials not auditor"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 60,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials not compliance_officer"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 70,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-reset-credentials OTP",
+      "description": "Reset OTP when the user has one configured",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-user-configured",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-otp",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
     }
   ],
   "authenticatorConfig": [
@@ -603,8 +744,51 @@
         "condUserRole": "compliance_officer",
         "negate": "true"
       }
+    },
+    {
+      "alias": "fbx-reset-credentials staff channel",
+      "config": {
+        "client_scope": "fbx-staff-channel",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials not banker",
+      "config": {
+        "condUserRole": "banker",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials not loan_officer",
+      "config": {
+        "condUserRole": "loan_officer",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials not admin",
+      "config": {
+        "condUserRole": "admin",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials not auditor",
+      "config": {
+        "condUserRole": "auditor",
+        "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials not compliance_officer",
+      "config": {
+        "condUserRole": "compliance_officer",
+        "negate": "true"
+      }
     }
   ],
+  "resetCredentialsFlow": "fbx-reset-credentials",
   "clients": [
     {
       "clientId": "svc-ln-loan-lifecycle",
@@ -1551,7 +1735,8 @@
         "acr",
         "profile",
         "roles",
-        "email"
+        "email",
+        "fbx-staff-channel"
       ],
       "optionalClientScopes": [
         "aud-svc-acc-accounts-ledger"

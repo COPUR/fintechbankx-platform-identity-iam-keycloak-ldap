@@ -6,7 +6,7 @@
 // admin API) and onboard-tpp.mjs --verify-live (admin API, the import Job's
 // last step).
 import { liveTppErrors, fetchClients } from "./tpp-rules.mjs";
-import { scopedCalleesOf, serviceClientErrors, STAFF_BROWSER_FLOW } from "./service-client-rules.mjs";
+import { scopedCalleesOf, serviceClientErrors, STAFF_BROWSER_FLOW, STAFF_RESET_FLOW } from "./service-client-rules.mjs";
 
 // A partial export of the realm (POST
 // .../partial-export?exportClients=true&exportGroupsAndRoles=true): an object
@@ -21,7 +21,7 @@ export function liveExportView(json) {
   for (const k of EXPORT_KEYS) if (!Array.isArray(json?.[k])) throw new Error(`--live-export: the export lacks ${k} (partial-export?exportClients=true&exportGroupsAndRoles=true)`);
   if (!json.roles || typeof json.roles !== "object") throw new Error("--live-export: the export lacks roles (partial-export with exportGroupsAndRoles=true)");
   return { ...Object.fromEntries(EXPORT_KEYS.map((k) => [k, json[k]])), roles: json.roles, scopeMappings: json.scopeMappings || [], clientScopeMappings: json.clientScopeMappings || {},
-    authenticatorConfig: json.authenticatorConfig || [] };
+    authenticatorConfig: json.authenticatorConfig || [], resetCredentialsFlow: json.resetCredentialsFlow, registrationAllowed: json.registrationAllowed, identityProviders: json.identityProviders || [] };
 }
 
 // The same view from the admin API (view-clients and view-realm). Client-role
@@ -29,11 +29,12 @@ export function liveExportView(json) {
 // the roles of that callee in each client's and client scope's effective role
 // scope, as Keycloak's hasScope gives them (fullScopeAllowed, composites and a
 // client's own roles applied). calleeRoleScopes returns these unchanged, so
-// both modes apply one model. The staff sign-in rule reads the realm roles,
-// the top-level flows and the tree of STAFF_BROWSER_FLOW: its subflows by id
-// (GET /authentication/flows/{id}) and its authenticator configs by id, both
-// taken from the flow's flattened executions, so the view has the shape of an
-// export.
+// both modes apply one model. The staff sign-in rule reads the realm's
+// resetCredentialsFlow and registrationAllowed, its identity providers, the
+// realm roles, the top-level flows and the trees of STAFF_BROWSER_FLOW and
+// STAFF_RESET_FLOW: their subflows by id (GET /authentication/flows/{id}) and
+// authenticator configs by id, both taken from the flows' flattened
+// executions, so the view has the shape of an export.
 export async function fetchLiveView({ fetch = globalThis.fetch, baseUrl, token, realm, registry }) {
   const base = `${String(baseUrl).replace(/\/+$/, "")}/admin/realms/${encodeURIComponent(realm)}`;
   const get = async (p) => {
@@ -54,10 +55,15 @@ export async function fetchLiveView({ fetch = globalThis.fetch, baseUrl, token, 
     scopeMappings: [],
     clientScopeMappings: {},
     authenticationFlows: await get("/authentication/flows"),
-    authenticatorConfig: []
+    authenticatorConfig: [],
+    identityProviders: await get("/identity-provider/instances")
   };
-  if (view.authenticationFlows.some((f) => f.alias === STAFF_BROWSER_FLOW)) {
-    for (const row of await get(`/authentication/flows/${encodeURIComponent(STAFF_BROWSER_FLOW)}/executions`)) {
+  const realmRep = await get("");
+  view.resetCredentialsFlow = realmRep.resetCredentialsFlow;
+  view.registrationAllowed = realmRep.registrationAllowed;
+  for (const alias of [STAFF_BROWSER_FLOW, STAFF_RESET_FLOW]) {
+    if (!view.authenticationFlows.some((f) => f.alias === alias)) continue; // reported as missing
+    for (const row of await get(`/authentication/flows/${encodeURIComponent(alias)}/executions`)) {
       if (row.authenticationFlow === true) view.authenticationFlows.push(await get(`/authentication/flows/${encodeURIComponent(row.flowId)}`));
       if (row.authenticationConfig) view.authenticatorConfig.push(await get(`/authentication/config/${encodeURIComponent(row.authenticationConfig)}`));
     }

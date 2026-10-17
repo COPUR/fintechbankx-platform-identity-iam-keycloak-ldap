@@ -264,14 +264,40 @@ export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c
 // requirements, authenticators, configs), negate "true" and every staff role
 // to exist as a realm role. Staff roles reach users through the LDAP groups
 // /staff/fbx-* (composites and group roles count, as in Keycloak's hasRole).
+//
+// "Forgot password" ends in a sign-in to the client it started from, through
+// the realm's reset credentials flow, which no client override reaches (a
+// customer reset from staff web's login page got a staff web token with the
+// ledger audience: local Keycloak 26.7.5 with an SMTP sink). The realm binds
+// STAFF_RESET_FLOW instead: the built-in reset credentials flow plus the same
+// staff check after the e-mail step, before the new password is set, run only
+// for a client that has the marker client scope STAFF_CHANNEL_SCOPE as a
+// default scope (conditional-client-scope reads the client's default and
+// requested scopes; every staff channel client carries the marker). The
+// response before the e-mail is the same for every username, so the check
+// reveals nothing to someone who does not hold the e-mail. Self-registration
+// and identity providers would sign users in through flows without the
+// check, and direct grant through the realm's direct grant flow, so the realm
+// allows neither and staff channel clients keep direct grant off.
 export const STAFF_ROLES = ["banker", "loan_officer", "admin", "auditor", "compliance_officer"];
 export const STAFF_BROWSER_FLOW = "fbx-staff-browser";
-export function staffBrowserFlow(roles = STAFF_ROLES) {
+export const STAFF_RESET_FLOW = "fbx-reset-credentials";
+export const STAFF_CHANNEL_SCOPE = "fbx-staff-channel";
+export const staffChannelScope = () => ({
+  name: STAFF_CHANNEL_SCOPE,
+  description: "Marks the staff channel clients: the reset credentials flow runs its staff check only for clients with this default scope. No mappers; not in the token's scope claim.",
+  protocol: "openid-connect",
+  attributes: { "include.in.token.scope": "false", "display.on.consent.screen": "false" },
+  protocolMappers: []
+});
+export function staffSignInFlows(roles = STAFF_ROLES) {
   const A = STAFF_BROWSER_FLOW;
+  const R = STAFF_RESET_FLOW;
   const step = (authenticator, requirement, priority, authenticatorConfig) => ({ authenticator, authenticatorFlow: false, requirement, priority, userSetupAllowed: false, ...(authenticatorConfig ? { authenticatorConfig } : {}) });
   const sub = (flowAlias, requirement, priority) => ({ authenticatorFlow: true, flowAlias, requirement, priority, userSetupAllowed: false });
   const flow = (alias, topLevel, description, authenticationExecutions) => ({ alias, description, providerId: "basic-flow", topLevel, builtIn: false, authenticationExecutions });
   const notRole = (r) => `${A} not ${r}`;
+  const resetNotRole = (r) => `${R} not ${r}`;
   return {
     authenticationFlows: [
       flow(A, true, "Staff web browser flow: sign in, then deny any user without a staff role", [sub(`${A} sign-in`, "REQUIRED", 10), sub(`${A} staff only`, "CONDITIONAL", 20)]),
@@ -279,9 +305,20 @@ export function staffBrowserFlow(roles = STAFF_ROLES) {
       flow(`${A} forms`, false, "Username and password, then OTP when the user has one", [step("auth-username-password-form", "REQUIRED", 10), sub(`${A} OTP`, "CONDITIONAL", 20)]),
       flow(`${A} OTP`, false, "OTP when the user has one configured", [step("conditional-user-configured", "REQUIRED", 10), step("auth-otp-form", "REQUIRED", 20)]),
       flow(`${A} staff only`, false, `Deny access to a user without any of ${roles.join(", ")}`,
-        [...roles.map((r, i) => step("conditional-user-role", "REQUIRED", 10 * (i + 1), notRole(r))), step("deny-access-authenticator", "REQUIRED", 10 * (roles.length + 1))])
+        [...roles.map((r, i) => step("conditional-user-role", "REQUIRED", 10 * (i + 1), notRole(r))), step("deny-access-authenticator", "REQUIRED", 10 * (roles.length + 1))]),
+      flow(R, true, "Reset credentials (the built-in flow), with the staff check for staff channel clients after the e-mail step",
+        [step("reset-credentials-choose-user", "REQUIRED", 10), step("reset-credential-email", "REQUIRED", 20), sub(`${R} staff only`, "CONDITIONAL", 30),
+          step("reset-password", "REQUIRED", 40), sub(`${R} OTP`, "CONDITIONAL", 50)]),
+      flow(`${R} staff only`, false, `At a client with ${STAFF_CHANNEL_SCOPE}, deny access to a user without any of ${roles.join(", ")}`,
+        [step("conditional-client-scope", "REQUIRED", 10, `${R} staff channel`), ...roles.map((r, i) => step("conditional-user-role", "REQUIRED", 10 * (i + 2), resetNotRole(r))),
+          step("deny-access-authenticator", "REQUIRED", 10 * (roles.length + 2))]),
+      flow(`${R} OTP`, false, "Reset OTP when the user has one configured", [step("conditional-user-configured", "REQUIRED", 10), step("reset-otp", "REQUIRED", 20)])
     ],
-    authenticatorConfig: roles.map((r) => ({ alias: notRole(r), config: { condUserRole: r, negate: "true" } }))
+    authenticatorConfig: [
+      ...roles.map((r) => ({ alias: notRole(r), config: { condUserRole: r, negate: "true" } })),
+      { alias: `${R} staff channel`, config: { client_scope: STAFF_CHANNEL_SCOPE, negate: "false" } },
+      ...roles.map((r) => ({ alias: resetNotRole(r), config: { condUserRole: r, negate: "true" } }))
+    ]
   };
 }
 
@@ -290,7 +327,7 @@ export function staffBrowserFlow(roles = STAFF_ROLES) {
 // order with a priority of its own, so list and priority order must agree),
 // each a subflow (by alias) or an authenticator with its config (by alias).
 // Ids, descriptions and the priority values themselves do not count.
-function flowTree(view, alias, errs, seen = []) {
+function flowTree(view, alias, errs, seen = [], root = alias) {
   const found = (view.authenticationFlows || []).filter((f) => f.alias === alias);
   if (found.length !== 1 || seen.includes(alias)) return { missing: alias };
   const f = found[0];
@@ -300,13 +337,13 @@ function flowTree(view, alias, errs, seen = []) {
   else if (sorted.some((e, i) => e !== execs[i])) errs.add(`flow ${alias}: executions are not listed in priority order (keycloak-config-cli creates subflows in list order, Keycloak runs by priority)`);
   const config = (a) => {
     const cs = (view.authenticatorConfig || []).filter((c) => c.alias === a);
-    if (cs.length > 1) errs.add(`flow ${STAFF_BROWSER_FLOW}: authenticator config alias ${a} is not unique`);
+    if (cs.length > 1) errs.add(`flow ${root}: authenticator config alias ${a} is not unique`);
     return cs.length === 1 ? Object.fromEntries(Object.entries(cs[0].config || {}).map(([k, v]) => [k, String(v)]).sort()) : { missing: a };
   };
   return {
     providerId: f.providerId,
     steps: sorted.map((e) => (e.authenticatorFlow === true
-      ? { requirement: e.requirement, flow: flowTree(view, e.flowAlias, errs, [...seen, alias]) }
+      ? { requirement: e.requirement, flow: flowTree(view, e.flowAlias, errs, [...seen, alias], root) }
       : { requirement: e.requirement, authenticator: e.authenticator, ...(e.authenticatorConfig !== undefined ? { config: config(e.authenticatorConfig) } : {}) }))
   };
 }
@@ -317,27 +354,47 @@ const describeTree = (t) => (t.missing !== undefined ? `<missing ${t.missing}>`
 export function staffSignInErrors(realm, registry) {
   const errs = new Set();
   const flows = realm.authenticationFlows || [];
-  const A = STAFF_BROWSER_FLOW;
-  if (!flows.some((f) => f.alias === A)) {
-    errs.add(`flow ${A} missing (staff web signs in only users with a staff role through it)`);
-  } else {
-    const want = describeTree(flowTree(staffBrowserFlow(), A, new Set()));
-    const got = describeTree(flowTree(realm, A, errs));
-    if (got !== want) errs.add(`flow ${A}: differs from the realm-as-code (sign in, then deny any user without one of ${STAFF_ROLES.join(", ")}): got ${got}`);
+  const want = staffSignInFlows();
+  const checkFlow = (alias, what) => {
+    if (!flows.some((f) => f.alias === alias)) { errs.add(`flow ${alias} missing (${what})`); return; }
+    const expected = describeTree(flowTree(want, alias, new Set()));
+    const got = describeTree(flowTree(realm, alias, errs));
+    if (got !== expected) errs.add(`flow ${alias}: differs from the realm-as-code (${what}): got ${got}`);
+  };
+  const roleList = STAFF_ROLES.join(", ");
+  checkFlow(STAFF_BROWSER_FLOW, `sign in, then deny any user without one of ${roleList}`);
+  checkFlow(STAFF_RESET_FLOW, `the built-in reset credentials flow plus, at a client with ${STAFF_CHANNEL_SCOPE}, the deny of any user without one of ${roleList} after the e-mail step`);
+  if (flows.some((f) => f.alias === STAFF_BROWSER_FLOW || f.alias === STAFF_RESET_FLOW)) {
     const realmRoles = new Set((realm.roles?.realm || []).map((r) => r.name));
     for (const r of STAFF_ROLES) {
-      if (!realmRoles.has(r)) errs.add(`flow ${A}: realm role ${r} does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`);
+      if (!realmRoles.has(r)) errs.add(`flow ${STAFF_BROWSER_FLOW}: realm role ${r} does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`);
     }
   }
+  if (realm.resetCredentialsFlow !== STAFF_RESET_FLOW) {
+    errs.add(`realm: resetCredentialsFlow must be the flow ${STAFF_RESET_FLOW} (got ${JSON.stringify(realm.resetCredentialsFlow ?? "none")}); with another flow "forgot password" signs any user in to a staff channel client`);
+  }
+  if (realm.registrationAllowed === true || String(realm.registrationAllowed).toLowerCase() === "true") {
+    errs.add("realm: registrationAllowed must be false (self-registration signs the new user in to the client it started from, staff web included, without the staff check)");
+  }
+  for (const idp of realm.identityProviders || []) {
+    errs.add(`realm: identity provider ${idp.alias} signs users in to any client without the staff check; this realm has none`);
+  }
+  const scope = (realm.clientScopes || []).find((x) => x.name === STAFF_CHANNEL_SCOPE);
+  if (!scope) errs.add(`client scope ${STAFF_CHANNEL_SCOPE} missing (the reset flow runs its staff check for the clients that have it)`);
+  else if ((scope.protocolMappers || []).length) errs.add(`client scope ${STAFF_CHANNEL_SCOPE}: must have no protocol mappers (it only marks the staff channel clients)`);
   const clients = new Map((realm.clients || []).map((c) => [c.clientId, c]));
   for (const entry of (registry.channelClients || []).filter((c) => c.userType === "staff")) {
     const c = clients.get(entry.clientId);
     if (!c) continue; // reported as missing by serviceClientErrors
     const v = c.authenticationFlowBindingOverrides?.browser;
     const target = v === undefined ? undefined : flows.find((f) => f.id !== undefined && f.id === v) || flows.find((f) => f.alias === v);
-    if (target?.alias !== A || target.topLevel === false) {
-      errs.add(`${c.clientId}: authenticationFlowBindingOverrides.browser must be the flow ${A} (got ${v === undefined ? "none" : JSON.stringify(v)}); without it any realm user, customers included, signs in to it`);
+    if (target?.alias !== STAFF_BROWSER_FLOW || target.topLevel === false) {
+      errs.add(`${c.clientId}: authenticationFlowBindingOverrides.browser must be the flow ${STAFF_BROWSER_FLOW} (got ${v === undefined ? "none" : JSON.stringify(v)}); without it any realm user, customers included, signs in to it`);
     }
+    if (!(c.defaultClientScopes || []).includes(STAFF_CHANNEL_SCOPE)) {
+      errs.add(`${c.clientId}: client scope ${STAFF_CHANNEL_SCOPE} must be a default scope (the reset flow's staff check runs only for clients that have it)`);
+    }
+    if (c.directAccessGrantsEnabled !== false) errs.add(`${c.clientId}: directAccessGrantsEnabled must be false (the direct grant flow has no staff check)`);
   }
   return [...errs];
 }

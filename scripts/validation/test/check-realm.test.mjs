@@ -582,6 +582,9 @@ function liveRealm() {
       ...(c.authenticationFlowBindingOverrides ? { authenticationFlowBindingOverrides: Object.fromEntries(Object.entries(c.authenticationFlowBindingOverrides).map(([k, v]) => [k, flowId(v)])) } : {}) })),
     authenticationFlows: flows,
     authenticatorConfig: realm.authenticatorConfig.map((c) => ({ id: `id-${c.alias}`, ...c })),
+    resetCredentialsFlow: realm.resetCredentialsFlow,
+    registrationAllowed: realm.registrationAllowed,
+    identityProviders: [],
     clientScopes: [...realm.clientScopes, ...builtInScopes].map((sc) => ({ id: `id-${sc.name}`, ...sc })),
     defaultDefaultClientScopes: [...realm.defaultDefaultClientScopes],
     defaultOptionalClientScopes: ["offline_access"],
@@ -637,6 +640,8 @@ function adminApi(live) {
     if (p === "/client-scopes") return json(live.clientScopes);
     if (p === "/default-default-client-scopes") return json(live.defaultDefaultClientScopes.map((name) => ({ id: `id-${name}`, name })));
     if (p === "/default-optional-client-scopes") return json(live.defaultOptionalClientScopes.map((name) => ({ id: `id-${name}`, name })));
+    if (p === "") return json({ realm: "fintechbankx", resetCredentialsFlow: live.resetCredentialsFlow, registrationAllowed: live.registrationAllowed });
+    if (p === "/identity-provider/instances") return json(live.identityProviders || []);
     if (p === "/roles") return json(live.roles.realm.map((r) => ({ id: `id-${r.name}`, name: r.name, composite: !!r.composite, clientRole: false })));
     if (p === "/authentication/flows") return json(live.authenticationFlows.filter((f) => f.topLevel));
     let m = p.match(/^\/authentication\/flows\/([^/]+)\/executions$/);
@@ -953,6 +958,21 @@ const staffOnly = (realm) => flowOf(realm, `${STAFF_FLOW} staff only`);
 const staffConfig = (realm, role) => realm.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} not ${role}`);
 const flowDiffers = `flow ${STAFF_FLOW}: differs from the realm-as-code`;
 const overrideRefused = `${STAFF_WEB}: authenticationFlowBindingOverrides.browser must be the flow ${STAFF_FLOW}`;
+// "Forgot password" ends in a sign-in to the client it started from, through
+// the realm's reset credentials flow, which no client override reaches: a
+// customer reset from staff web's login page and got a staff web token with
+// the ledger audience (local Keycloak 26.7.5, SMTP sink). The realm's reset
+// flow fbx-reset-credentials is the built-in one plus the same staff check
+// after the e-mail step (before the password is set), limited by a
+// client-scope condition to clients with the marker scope fbx-staff-channel
+// (a default scope of every staff channel client). Self-registration and
+// identity providers would sign users in without either flow; direct grant
+// would use the realm's direct grant flow.
+const RESET_FLOW = "fbx-reset-credentials";
+const MARKER = "fbx-staff-channel";
+const resetDiffers = `flow ${RESET_FLOW}: differs from the realm-as-code`;
+const resetBinding = `realm: resetCredentialsFlow must be the flow ${RESET_FLOW}`;
+const markerMissing = `${STAFF_WEB}: client scope ${MARKER} must be a default scope`;
 
 test("staff web signs in only users with a staff role: browser flow fbx-staff-browser, sign-in first, then deny without a staff role", () => {
   const { realm, registry } = fresh();
@@ -976,6 +996,28 @@ test("staff web signs in only users with a staff role: browser flow fbx-staff-br
   assert.deepEqual(Object.values(realmCheck.STAFF_ROLE_GROUPS), FLOW_STAFF_ROLES);
   for (const c of conditions) assert.deepEqual(c, { condUserRole: c.condUserRole, negate: "true" });
   for (const f of realm.authenticationFlows) assert.equal(f.providerId, "basic-flow", f.alias);
+  // Forgot password: the built-in reset credentials flow plus the staff check
+  // for staff channel clients after the e-mail step, before the new password.
+  assert.equal(realm.resetCredentialsFlow, RESET_FLOW);
+  assert.equal(flowOf(realm, RESET_FLOW).topLevel, true);
+  assert.deepEqual(steps(RESET_FLOW), ["REQUIRED reset-credentials-choose-user", "REQUIRED reset-credential-email", `CONDITIONAL flow:${RESET_FLOW} staff only`,
+    "REQUIRED reset-password", `CONDITIONAL flow:${RESET_FLOW} OTP`]);
+  assert.deepEqual(steps(`${RESET_FLOW} OTP`), ["REQUIRED conditional-user-configured", "REQUIRED reset-otp"]);
+  assert.deepEqual(steps(`${RESET_FLOW} staff only`), ["REQUIRED conditional-client-scope", ...STAFF.map(() => "REQUIRED conditional-user-role"), "REQUIRED deny-access-authenticator"]);
+  const cfg = (e) => realm.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig).config;
+  const resetChecks = flowOf(realm, `${RESET_FLOW} staff only`).authenticationExecutions;
+  assert.deepEqual(cfg(resetChecks[0]), { client_scope: MARKER, negate: "false" });
+  assert.deepEqual(resetChecks.slice(1, -1).map(cfg), conditions);
+  // The marker: a default scope of staff web only, no mappers, not in the
+  // token's scope claim, never a realm default.
+  const marker = realm.clientScopes.find((x) => x.name === MARKER);
+  assert.deepEqual(marker.protocolMappers || [], []);
+  assert.equal(marker.attributes["include.in.token.scope"], "false");
+  assert.deepEqual(realm.clients.filter((c) => (c.defaultClientScopes || []).includes(MARKER)).map((c) => c.clientId), [STAFF_WEB]);
+  assert.ok(![...realm.defaultDefaultClientScopes, ...(realm.defaultOptionalClientScopes || [])].includes(MARKER));
+  assert.equal(realm.registrationAllowed, false);
+  assert.equal(realm.identityProviders, undefined);
+  assert.equal(client({ realm }, STAFF_WEB).directAccessGrantsEnabled, false);
 });
 
 test("the gate refuses staff web without the staff flow, and any flow that lets a user without a staff role through", () => {
@@ -999,7 +1041,24 @@ test("the gate refuses staff web without the staff flow, and any flow that lets 
     ["two executions with one priority", (r) => { const e = staffOnly(r).authenticationExecutions; e[1].priority = e[0].priority; }, `flow ${STAFF_FLOW} staff only: two executions share priority`],
     ["two configs with one alias", (r) => { r.authenticatorConfig.push({ alias: `${STAFF_FLOW} not banker`, config: { condUserRole: "customer", negate: "true" } }); }, `flow ${STAFF_FLOW}: authenticator config alias ${STAFF_FLOW} not banker is not unique`],
     ["a staff role removed from the realm", (r) => { r.roles.realm = r.roles.realm.filter((x) => x.name !== "auditor"); },
-      `flow ${STAFF_FLOW}: realm role auditor does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`]
+      `flow ${STAFF_FLOW}: realm role auditor does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`],
+    // Forgot password, self-registration, identity providers, direct grant.
+    ["built-in reset flow", (r) => { delete r.resetCredentialsFlow; }, resetBinding],
+    ["reset flow bound to another flow", (r) => { r.resetCredentialsFlow = "reset credentials"; }, resetBinding],
+    ["reset flow missing", (r) => { r.authenticationFlows = r.authenticationFlows.filter((f) => f.alias !== RESET_FLOW); }, `flow ${RESET_FLOW} missing`],
+    ["reset staff check after the new password", (r) => { const e = flowOf(r, RESET_FLOW).authenticationExecutions; [e[2].priority, e[3].priority] = [e[3].priority, e[2].priority]; [e[2], e[3]] = [e[3], e[2]]; }, resetDiffers],
+    ["reset staff check for every client", (r) => { flowOf(r, `${RESET_FLOW} staff only`).authenticationExecutions.shift(); }, resetDiffers],
+    ["reset marker condition negated", (r) => { r.authenticatorConfig.find((c) => c.config.client_scope === MARKER).config.negate = "true"; }, resetDiffers],
+    ["reset marker condition on another scope", (r) => { r.authenticatorConfig.find((c) => c.config.client_scope === MARKER).config.client_scope = "roles"; }, resetDiffers],
+    ["reset role condition not negated", (r) => { r.authenticatorConfig.find((c) => c.alias === `${RESET_FLOW} not admin`).config.negate = "false"; }, resetDiffers],
+    ["marker not on staff web", (r) => { const c = client({ realm: r }, STAFF_WEB); c.defaultClientScopes = c.defaultClientScopes.filter((x) => x !== MARKER); }, markerMissing],
+    ["marker optional on staff web", (r) => { const c = client({ realm: r }, STAFF_WEB); c.defaultClientScopes = c.defaultClientScopes.filter((x) => x !== MARKER); c.optionalClientScopes.push(MARKER); }, markerMissing],
+    ["marker scope missing", (r) => { r.clientScopes = r.clientScopes.filter((x) => x.name !== MARKER); }, `client scope ${MARKER} missing`],
+    ["marker scope with a mapper", (r) => { r.clientScopes.find((x) => x.name === MARKER).protocolMappers = [{ name: "x", protocol: "openid-connect", protocolMapper: "oidc-hardcoded-claim-mapper", config: { "claim.name": "x", "claim.value": "y" } }]; },
+      `client scope ${MARKER}: must have no protocol mappers`],
+    ["self-registration on", (r) => { r.registrationAllowed = true; }, "realm: registrationAllowed must be false"],
+    ["an identity provider", (r) => { r.identityProviders = [{ alias: "corp-idp", providerId: "oidc", enabled: true }]; }, "realm: identity provider corp-idp"],
+    ["direct grant on staff web", (r) => { client({ realm: r }, STAFF_WEB).directAccessGrantsEnabled = true; }, `${STAFF_WEB}: directAccessGrantsEnabled must be false`]
   ];
   for (const [name, mutate, expected] of cases) {
     const input = fresh();
@@ -1025,7 +1084,12 @@ test("live: staff web's sign-in flow, the same through the admin API and a parti
     ["deny disabled", (l) => { liveFlow(l, `${STAFF_FLOW} staff only`).authenticationExecutions.at(-1).requirement = "DISABLED"; }, flowDiffers],
     ["staff check alternative", (l) => { liveFlow(l, STAFF_FLOW).authenticationExecutions[1].requirement = "ALTERNATIVE"; }, flowDiffers],
     ["realm role deleted", (l) => { l.roles.realm = l.roles.realm.filter((r) => r.name !== "compliance_officer"); },
-      `flow ${STAFF_FLOW}: realm role compliance_officer does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`]
+      `flow ${STAFF_FLOW}: realm role compliance_officer does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`],
+    ["reset flow back to the built-in", (l) => { l.resetCredentialsFlow = "reset credentials"; }, resetBinding],
+    ["reset marker negated", (l) => { l.authenticatorConfig.find((c) => c.config.client_scope === MARKER).config.negate = "true"; }, resetDiffers],
+    ["marker removed from staff web", (l) => { const c = liveClient(l, STAFF_WEB); c.defaultClientScopes = c.defaultClientScopes.filter((x) => x !== MARKER); }, markerMissing],
+    ["self-registration on", (l) => { l.registrationAllowed = true; }, "realm: registrationAllowed must be false"],
+    ["an identity provider", (l) => { l.identityProviders = [{ alias: "corp-idp", providerId: "oidc", enabled: true }]; }, "realm: identity provider corp-idp"]
   ];
   for (const [name, mutate, expected] of cases) {
     const live = liveRealm();
@@ -1039,7 +1103,7 @@ test("live: staff web's sign-in flow, the same through the admin API and a parti
   const ok = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
   assert.deepEqual(ok.errors, []);
   for (const p of ["/roles", "/authentication/flows", `/authentication/flows/${STAFF_FLOW}/executions`, `/authentication/flows/${encodeURIComponent(`id-${STAFF_FLOW} staff only`)}`,
-    `/authentication/config/${encodeURIComponent(`id-${STAFF_FLOW} not banker`)}`]) {
+    `/authentication/config/${encodeURIComponent(`id-${STAFF_FLOW} not banker`)}`, `/authentication/flows/${RESET_FLOW}/executions`, "/identity-provider/instances"]) {
     assert.ok(api.urls.some((u) => u.startsWith(`http://kc.test/admin/realms/fintechbankx${p}`)), `${p} not fetched: ${api.urls.join(" ")}`);
   }
 });

@@ -93,6 +93,8 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
   walk(realm, (key, value, trail) => {
     if (!SECRET_KEY.test(key)) return;
     if (key === "passwordPolicy" || key === "clientAuthenticatorType") return;
+    // The realm's reset flow binding names a flow alias (staff sign-in rule).
+    if (key === "resetCredentialsFlow" && trail.length === 1) return;
     const values = Array.isArray(value) ? value : [value];
     for (const v of values) {
       if (typeof v !== "string") continue;

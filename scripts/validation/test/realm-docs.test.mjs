@@ -163,6 +163,9 @@ test("REALM_AS_CODE.md says staff web signs in only users with a staff role, and
   const open = line.slice(line.indexOf("Known gap, not checked"));
   assert.match(checked, /\(5\)[^.]*`fintechbankx-staff-web`[^.]*`fbx-staff-browser`/);
   assert.doesNotMatch(open, /\(5\)/);
+  // Forgot password reaches staff web through the realm's reset flow.
+  assert.match(checked, /"Forgot password"[^.]*reset credentials flow[^.]*no client override reaches/);
+  assert.match(checked, /`fbx-reset-credentials`[^.]*`fbx-staff-channel`/);
 });
 
 // onboard-tpp.mjs --verify-live always runs the service-client rules; --registry only picks the file.
