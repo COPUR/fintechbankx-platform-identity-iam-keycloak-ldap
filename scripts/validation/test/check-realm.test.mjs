@@ -556,6 +556,10 @@ function liveRealm() {
   const { realm } = fresh();
   const builtIn = [["account", false], ["account-console", false], ["admin-cli", true], ["broker", false], ["realm-management", false], ["security-admin-console", true]]
     .map(([clientId, fullScopeAllowed]) => ({ clientId, fullScopeAllowed, attributes: fullScopeAllowed ? { [LIGHTWEIGHT]: "true" } : {}, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [] }));
+  // FGAP v2 (adminPermissionsEnabled) adds the client admin-permissions,
+  // the resource server of the admin permissions, with Authorization Services.
+  builtIn.push({ clientId: "admin-permissions", fullScopeAllowed: false, serviceAccountsEnabled: true, authorizationServicesEnabled: true, attributes: { realm_client: "false" },
+    authorizationSettings: { policyEnforcementMode: "ENFORCING", decisionStrategy: "UNANIMOUS", resources: [], policies: [], scopes: [] }, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [] });
   const builtInScopes = [
     { name: "basic", protocol: "openid-connect", attributes: {}, protocolMappers: [] },
     { name: "roles", protocol: "openid-connect", attributes: {}, protocolMappers: [{ name: "audience resolve", protocol: "openid-connect", protocolMapper: "oidc-audience-resolve-mapper", config: {} }] },
@@ -1330,6 +1334,41 @@ test("standard token exchange is refused on every client, in all three modes", a
   }
 });
 
+// Authorization Services (UMA): on a client with authorizationServicesEnabled
+// and a granting policy, any client's token buys an RPT with that client in
+// aud (grant type urn:ietf:params:oauth:grant-type:uma-ticket, audience=<it>),
+// carrying the realm roles of its role scope: svc-cus-profile-kyc got an RPT
+// with aud svc-acc-accounts-ledger and realm role service (Keycloak 26.7.5).
+// No client of this realm uses it; Keycloak's FGAP v2 client
+// admin-permissions is the only exception, in all three modes.
+const UMA = (id) => `${id}: Authorization Services are enabled (authorizationServicesEnabled or authorizationSettings); they are not used in this realm (any client could trade its token for an RPT with aud=${id} through grant type uma-ticket)`;
+
+test("Authorization Services (UMA) are refused on every client but Keycloak's admin-permissions, in all three modes", async () => {
+  for (const c of fresh().realm.clients) {
+    assert.notEqual(c.authorizationServicesEnabled, true, c.clientId);
+    assert.equal(c.authorizationSettings, undefined, c.clientId);
+  }
+  const settings = { policyEnforcementMode: "ENFORCING", resources: [{ name: "all", uris: ["/*"] }], policies: [], decisionStrategy: "UNANIMOUS" };
+  for (const [what, set] of [["authorizationServicesEnabled", (c) => { c.authorizationServicesEnabled = true; }], ["authorizationSettings", (c) => { c.authorizationSettings = structuredClone(settings); }],
+    ["both", (c) => { c.authorizationServicesEnabled = true; c.authorizationSettings = structuredClone(settings); }]]) {
+    for (const id of [LEDGER, "svc-cus-profile-kyc", "fintechbankx-staff-web", "svc-obs-grafana"]) {
+      const input = fresh();
+      set(client(input, id));
+      assert.deepEqual(checkRealm(input), [UMA(id)], `${id} ${what}`);
+    }
+    for (const id of [LEDGER, "svc-rsk-decisioning", "admin-cli", "realm-management"]) {
+      const live = liveRealm();
+      set(liveClient(live, id));
+      assert.deepEqual(await liveErrors(live), [UMA(id)], `live ${id} ${what}`);
+    }
+  }
+  // Keycloak's admin-permissions client (liveRealm) passes; false passes.
+  assert.equal(liveClient(liveRealm(), "admin-permissions").authorizationServicesEnabled, true);
+  const off = fresh();
+  client(off, LEDGER).authorizationServicesEnabled = false;
+  assert.deepEqual(checkRealm(off), []);
+});
+
 // Known gap (4), closed: the realm import Job applies the service-client
 // rules to the running realm, not only the TPP rules. Its last step
 // (container tpp-onboarding) runs onboard-tpp.mjs --verify-live with the
@@ -1457,7 +1496,8 @@ test("the Job's tpp-onboarding step against a mock admin API passes the complian
       `fintechbankx-web: optional audience scopes ${LEDGER_SCOPE} != registry <none>`],
     ["aud claim mapper in the built-in scope roles", (l) => liveScope(l, "roles").protocolMappers.push(audClaimMapper()), audRouteErrors("client scope roles", audClaimMapper())],
     ["script mapper on admin-cli", (l) => liveClient(l, "admin-cli").protocolMappers.push(scriptMapper("script-aud.js")), notStock("admin-cli", scriptMapper("script-aud.js"))],
-    ["standard token exchange on svc-ln-loan-lifecycle", (l) => { liveClient(l, "svc-ln-loan-lifecycle").attributes[TOKEN_EXCHANGE] = "true"; }, exchangeRefused("svc-ln-loan-lifecycle", "true")]
+    ["standard token exchange on svc-ln-loan-lifecycle", (l) => { liveClient(l, "svc-ln-loan-lifecycle").attributes[TOKEN_EXCHANGE] = "true"; }, exchangeRefused("svc-ln-loan-lifecycle", "true")],
+    ["Authorization Services on the ledger client", (l) => { liveClient(l, LEDGER).authorizationServicesEnabled = true; }, UMA(LEDGER)]
   ];
   for (const [name, mutate, expected] of bypasses) {
     const live = liveRealm();

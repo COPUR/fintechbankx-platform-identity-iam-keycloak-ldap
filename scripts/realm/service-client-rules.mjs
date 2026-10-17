@@ -20,6 +20,8 @@
 //   Keycloak mapper (STOCK_PROTOCOL_MAPPERS below: script and custom SPI
 //   mappers can write any claim);
 // - on any client, standard token exchange (STANDARD_TOKEN_EXCHANGE below);
+// - on any client but Keycloak's admin-permissions, Authorization Services
+//   (UMA: authorizationServicesErrors below);
 // - on any client or client scope, any mapper whose claim.name, read as a
 //   Keycloak claim path (claimPath below), starts with aud (this realm sets
 //   audiences only through oidc-audience-mapper);
@@ -220,6 +222,19 @@ const tokenExchangeErrors = (c) => {
     : [];
 };
 
+// Authorization Services (UMA, Keycloak 26.7.5 feature authorization, on by
+// default): on a client with authorizationServicesEnabled and a granting
+// policy, any client's token buys an RPT with that client in aud (grant type
+// urn:ietf:params:oauth:grant-type:uma-ticket, audience=<client>), with the
+// realm roles of its role scope: svc-cus-profile-kyc got an RPT with aud
+// svc-acc-accounts-ledger and realm role service. No client of this realm
+// uses it. Keycloak's FGAP v2 client admin-permissions (adminPermissionsEnabled)
+// is the resource server of the admin permissions and keeps it.
+export const FGAP_V2_CLIENT = "admin-permissions";
+const authorizationServicesErrors = (c) => (c.clientId !== FGAP_V2_CLIENT && (c.authorizationServicesEnabled === true || c.authorizationSettings !== undefined)
+  ? [`${c.clientId}: Authorization Services are enabled (authorizationServicesEnabled or authorizationSettings); they are not used in this realm (any client could trade its token for an RPT with aud=${c.clientId} through grant type uma-ticket)`]
+  : []);
+
 // Keycloak treats a missing fullScopeAllowed as true: every realm role and
 // client role of the user (or service account) would reach the token.
 export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c.clientId}: fullScopeAllowed must be false (Keycloak treats a missing value as true)`]);
@@ -254,7 +269,8 @@ export function serviceClientErrors(realm, registry) {
   // audiences list the callee (compared above). fullScopeAllowed false on
   // every registry client and every client tagged fbx.client-type (runtime
   // TPP clients); Keycloak's built-in clients of a running realm are neither.
-  // No client, built-ins included, enables standard token exchange.
+  // No client, built-ins included, enables standard token exchange or
+  // Authorization Services (but Keycloak's admin-permissions).
   for (const c of clients.values()) {
     for (const a of scopedAudiences(c, scopedCallees)) err(`${c.clientId}: audience ${a} ${onlyVia(a)}, never through a mapper`);
     if (!serviceIds.has(c.clientId) && !channelIds.has(c.clientId) && audienceScopes(c).length) {
@@ -263,6 +279,7 @@ export function serviceClientErrors(realm, registry) {
     for (const name of c.defaultClientScopes || []) if (AUDIENCE_SCOPE.test(name)) err(`${c.clientId}: audience scope ${name} must be optional, not default`);
     if (registered.has(c.clientId) || c.attributes?.["fbx.client-type"]) for (const m of fullScopeErrors(c)) err(m);
     for (const m of tokenExchangeErrors(c)) err(m);
+    for (const m of authorizationServicesErrors(c)) err(m);
   }
 
   // One audience scope per by-scope callee, holding exactly one access-token
