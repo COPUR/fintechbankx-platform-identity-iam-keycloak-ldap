@@ -9,10 +9,12 @@
       "displayName": "Loan Lifecycle Service",
       "source": "contract",
       "audiences": [
-        "svc-cus-profile-kyc"
+        "svc-cus-profile-kyc",
+        "svc-acc-accounts-ledger"
       ],
       "audienceProvenance": {
-        "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08 (CustomerProfileHttpAdapter)"
+        "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08 (CustomerProfileHttpAdapter)",
+        "svc-acc-accounts-ledger": "accounts ledger thread 2026-10-17: docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS"
       }
     },
     {
@@ -26,13 +28,15 @@
         "svc-rsk-decisioning",
         "svc-cmp-evidence",
         "svc-of-payee-verification",
-        "svc-cus-profile-kyc"
+        "svc-cus-profile-kyc",
+        "svc-acc-accounts-ledger"
       ],
       "audienceProvenance": {
         "svc-rsk-decisioning": "confirmed by service thread 2026-10-08",
         "svc-cmp-evidence": "confirmed by service thread 2026-10-08",
         "svc-of-payee-verification": "confirmed by service thread 2026-10-08",
-        "svc-cus-profile-kyc": "confirmed by customer thread 2026-10-08: GET /api/v1/customers/{id}/kyc-status (SERVICE_CALLERS_KYC)"
+        "svc-cus-profile-kyc": "confirmed by customer thread 2026-10-08: GET /api/v1/customers/{id}/kyc-status (SERVICE_CALLERS_KYC)",
+        "svc-acc-accounts-ledger": "accounts ledger thread 2026-10-17: docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS"
       }
     },
     {
@@ -43,10 +47,12 @@
       "displayName": "Recurring Mandates Service",
       "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [
-        "svc-of-consent-authorization"
+        "svc-of-consent-authorization",
+        "svc-acc-accounts-ledger"
       ],
       "audienceProvenance": {
-        "svc-of-consent-authorization": "confirmed by the open finance thread 2026-10-08 (consent GET /api/v1/consents/{id} azp allow-list)"
+        "svc-of-consent-authorization": "confirmed by the open finance thread 2026-10-08 (consent GET /api/v1/consents/{id} azp allow-list)",
+        "svc-acc-accounts-ledger": "accounts ledger thread 2026-10-17: docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS"
       }
     },
     {
@@ -57,10 +63,12 @@
       "displayName": "Bulk Payment Orchestration Service",
       "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [
-        "svc-of-consent-authorization"
+        "svc-of-consent-authorization",
+        "svc-acc-accounts-ledger"
       ],
       "audienceProvenance": {
-        "svc-of-consent-authorization": "confirmed by service thread 2026-10-08 (bulk orchestration PR #13, client-credentials call to consent-auth)"
+        "svc-of-consent-authorization": "confirmed by service thread 2026-10-08 (bulk orchestration PR #13, client-credentials call to consent-auth)",
+        "svc-acc-accounts-ledger": "accounts ledger thread 2026-10-17: docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS"
       }
     },
     {

@@ -28,13 +28,17 @@ Change flow: edit the registry or the render script, run `node scripts/realm/ren
 
   | Client | aud |
   |---|---|
-  | `svc-ln-loan-lifecycle` | `svc-cus-profile-kyc` (confirmed) |
-  | `svc-pay-initiation-settlement` | `svc-rsk-decisioning`, `svc-cmp-evidence`, `svc-of-consent-authorization`, `svc-of-payee-verification`, `svc-cus-profile-kyc` (kyc-status) (confirmed) |
+  | `svc-ln-loan-lifecycle` | `svc-cus-profile-kyc` (confirmed); `svc-acc-accounts-ledger` (accounts ledger thread 2026-10-17, `SERVICE_CALLERS`) |
+  | `svc-pay-initiation-settlement` | `svc-rsk-decisioning`, `svc-cmp-evidence`, `svc-of-payee-verification`, `svc-cus-profile-kyc` (kyc-status) (confirmed); `svc-acc-accounts-ledger` (accounts ledger thread 2026-10-17, `SERVICE_CALLERS`) |
+  | `svc-pay-recurring-mandates` | `svc-of-consent-authorization` (confirmed); `svc-acc-accounts-ledger` (accounts ledger thread 2026-10-17, `SERVICE_CALLERS`) |
+  | `svc-pay-bulk-orchestration` | `svc-of-consent-authorization` (confirmed); `svc-acc-accounts-ledger` (accounts ledger thread 2026-10-17, `SERVICE_CALLERS`) |
   | `fintechbankx-web` (customers) | `svc-cus-profile-kyc` (confirmed); loan and the four payment services (derived) |
   | `fintechbankx-staff-web` (staff) | `svc-cus-profile-kyc` (confirmed); loan, the four payment services, `svc-rsk-decisioning`, `svc-cmp-evidence` (derived; risk and compliance moved here from `fintechbankx-web`) |
   | `fintechbankx-mobile` | `svc-cus-profile-kyc` (confirmed); loan and the four payment services (derived) |
   | TPP clients (`of-tpp-conformance-template`) | the six open-finance resource services (confirmed), `svc-of-consent-authorization` (derived) |
   | other service clients | none yet (no synchronous call found) |
+
+  The accounts ledger audience is on its four `SERVICE_CALLERS` only. The web, mobile and staff web clients do not carry it yet, so customer and staff tokens from them are refused by the ledger (`GET /api/v1/accounts/{accountId}` for `customer` own accounts, `banker` and `admin`, and the staff account operations); adding it there is a separate decision (Proposed).
 
 - **First-party public clients**: authorization code + PKCE S256, no client credential, redirect URIs from the overlay, `fullScopeAllowed=false`. Each client serves one user type (registry `userType`), so a token from a customer channel can never carry a staff role and the other way round (security review 2026-10-08). DPoP is not required for first-party clients yet (contract addendum; Proposed for mobile later).
 

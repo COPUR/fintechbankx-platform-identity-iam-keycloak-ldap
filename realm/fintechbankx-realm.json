@@ -437,6 +437,19 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
+        },
+        {
+          "name": "aud-svc-acc-accounts-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-acc-accounts-ledger",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
         }
       ],
       "defaultClientScopes": [
@@ -526,6 +539,19 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
+        },
+        {
+          "name": "aud-svc-acc-accounts-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-acc-accounts-ledger",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
         }
       ],
       "defaultClientScopes": [
@@ -576,6 +602,19 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
+        },
+        {
+          "name": "aud-svc-acc-accounts-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-acc-accounts-ledger",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
         }
       ],
       "defaultClientScopes": [
@@ -621,6 +660,19 @@
           "consentRequired": false,
           "config": {
             "included.client.audience": "svc-of-consent-authorization",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        },
+        {
+          "name": "aud-svc-acc-accounts-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-acc-accounts-ledger",
             "access.token.claim": "true",
             "id.token.claim": "false",
             "introspection.token.claim": "true",

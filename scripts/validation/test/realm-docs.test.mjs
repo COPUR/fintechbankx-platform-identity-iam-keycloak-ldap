@@ -124,3 +124,17 @@ test("REALM_AS_CODE.md counts the client credentials of the realm import Externa
   assert.ok(m, "REALM_AS_CODE.md does not count the import Job's client credentials");
   assert.equal(Number(m[1]), credentials);
 });
+
+// The audience table of REALM_AS_CODE.md has one row per calling service
+// client naming exactly its registry audiences (service ids in backticks).
+test("the REALM_AS_CODE.md audience table names exactly the registry audiences of each calling service client", () => {
+  const rows = new Map(realmDoc.split("\n")
+    .map((l) => l.match(/^\s*\| `(svc-[a-z0-9-]+)` \| (.*) \|\s*$/))
+    .filter(Boolean)
+    .map((m) => [m[1], m[2]]));
+  for (const c of registry.clients.filter((x) => x.audiences.length > 0)) {
+    assert.ok(rows.has(c.clientId), `the audience table has no row for ${c.clientId}`);
+    const named = [...rows.get(c.clientId).matchAll(/`(svc-[a-z0-9-]+)`/g)].map((x) => x[1]).sort();
+    assert.deepEqual(named, [...c.audiences].sort(), `${c.clientId} row`);
+  }
+});

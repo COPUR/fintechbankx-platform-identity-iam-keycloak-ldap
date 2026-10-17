@@ -578,3 +578,36 @@ test("the accounts ledger has a confidential client-credentials client in namesp
   assert.deepEqual(input.realm.users.find((u) => u.serviceAccountClientId === LEDGER)?.realmRoles, ["service"]);
   assert.equal(input.importSecretRefs[secretEnvName(LEDGER)], "ENVIRONMENT/accounts-ledger-service/oidc-client");
 });
+
+// The ledger's SERVICE_CALLERS (its chart values and README, and
+// docs/CONSUMER_CONTRACT.md) call it with client-credentials tokens whose aud
+// must contain svc-acc-accounts-ledger. Channel clients (web, mobile, staff
+// web, TPP template) and the staff SSO client do not get the audience here:
+// customer and staff reads through them are a separate decision.
+const LEDGER_CALLERS = ["svc-ln-loan-lifecycle", "svc-pay-bulk-orchestration", "svc-pay-initiation-settlement", "svc-pay-recurring-mandates"];
+const LEDGER_PROVENANCE = "accounts ledger thread 2026-10-17: docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS";
+const withAudience = (input, aud) => input.realm.clients
+  .filter((c) => (c.protocolMappers || []).some((m) => m.protocolMapper === "oidc-audience-mapper" && m.config?.["included.client.audience"] === aud))
+  .map((c) => c.clientId)
+  .sort();
+
+test("the four SERVICE_CALLERS of the accounts ledger carry its audience, with provenance", () => {
+  const input = fresh();
+  for (const id of LEDGER_CALLERS) {
+    assert.ok(auds(input, id).includes(LEDGER), `${id}: aud ${LEDGER} missing`);
+    const entry = input.registry.clients.find((c) => c.clientId === id);
+    assert.equal(entry.audienceProvenance[LEDGER], LEDGER_PROVENANCE, id);
+  }
+  // Earlier audiences of the callers stay as they were.
+  assert.deepEqual(auds(input, "svc-ln-loan-lifecycle"), [LEDGER, "svc-cus-profile-kyc"].sort());
+  assert.deepEqual(auds(input, "svc-pay-recurring-mandates"), [LEDGER, "svc-of-consent-authorization"].sort());
+  assert.deepEqual(auds(input, "svc-pay-bulk-orchestration"), [LEDGER, "svc-of-consent-authorization"].sort());
+  assert.deepEqual(auds(input, "svc-pay-initiation-settlement"), [LEDGER, "svc-cmp-evidence", "svc-cus-profile-kyc", "svc-of-payee-verification", "svc-rsk-decisioning"].sort());
+});
+
+test("no client other than the four ledger callers carries the ledger audience (channel and SSO clients excluded)", () => {
+  const input = fresh();
+  assert.deepEqual(withAudience(input, LEDGER), LEDGER_CALLERS);
+  for (const c of input.registry.channelClients) assert.ok(!c.audiences.includes(LEDGER), `${c.clientId} must not carry ${LEDGER}`);
+  for (const c of input.registry.ssoClients || []) assert.ok(!(c.audiences || []).includes(LEDGER), `${c.clientId} must not carry ${LEDGER}`);
+});
