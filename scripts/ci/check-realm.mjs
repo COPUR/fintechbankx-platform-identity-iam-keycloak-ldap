@@ -214,6 +214,15 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     if (!registered.has(c.clientId)) err(`client ${c.clientId} is not in realm/service-clients.json`);
     for (const a of audiences(c)) if (!knownIds.has(a)) err(`${c.clientId}: audience ${a} is not a client of the realm`);
   }
+  // Every registry audience says where it comes from (confirmed by the owning
+  // service thread, or derived); a provenance without its audience is stale.
+  for (const entry of [...registry.clients, ...(registry.channelClients || []), ...(registry.ssoClients || [])]) {
+    const prov = entry.audienceProvenance || {};
+    for (const a of entry.audiences || []) {
+      if (!/^(confirmed by|derived)/.test(prov[a] ?? "")) err(`${entry.clientId}: audience ${a} needs an audienceProvenance starting with "confirmed by" or "derived"`);
+    }
+    for (const k of Object.keys(prov)) if (!(entry.audiences || []).includes(k)) err(`${entry.clientId}: audienceProvenance ${k} names no registry audience of this client`);
+  }
 
   // Fine-grained admin permissions (applied by scripts/realm/apply-admin-permissions.mjs).
   const groupPaths = new Set();

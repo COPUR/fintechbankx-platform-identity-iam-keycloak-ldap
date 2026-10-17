@@ -154,6 +154,37 @@ test("the customer service may only view and manage members of /customers", () =
   mutate((x) => { delete x.reason; }, "fbx-customers-customer-service: reason required");
 });
 
+// Every registry audience says where it comes from: confirmed by the owning
+// service thread, or derived by the platform pillar. A provenance without its
+// audience is stale.
+const PROVENANCE = /^(confirmed by|derived)/;
+const registryEntries = (registry) => [...registry.clients, ...(registry.channelClients || []), ...(registry.ssoClients || [])];
+
+test("every registry audience has a provenance starting with confirmed by or derived, and no provenance lacks its audience", () => {
+  const { registry } = fresh();
+  for (const e of registryEntries(registry)) {
+    for (const a of e.audiences || []) assert.match(e.audienceProvenance?.[a] ?? "", PROVENANCE, `${e.clientId}: audience ${a}`);
+    for (const k of Object.keys(e.audienceProvenance || {})) assert.ok((e.audiences || []).includes(k), `${e.clientId}: audienceProvenance ${k} without its audience`);
+  }
+  const want = (id, a) => `${id}: audience ${a} needs an audienceProvenance starting with "confirmed by" or "derived"`;
+  const entry = (input, id) => registryEntries(input.registry).find((e) => e.clientId === id);
+  const missing = fresh();
+  delete entry(missing, "svc-ln-loan-lifecycle").audienceProvenance["svc-cus-profile-kyc"];
+  failsWith(missing, want("svc-ln-loan-lifecycle", "svc-cus-profile-kyc"));
+  const vague = fresh();
+  entry(vague, "fintechbankx-web").audienceProvenance["svc-pay-request-to-pay"] = "assumed";
+  failsWith(vague, want("fintechbankx-web", "svc-pay-request-to-pay"));
+  const noKey = fresh();
+  delete entry(noKey, "of-tpp-conformance-template").audienceProvenance;
+  failsWith(noKey, want("of-tpp-conformance-template", "svc-of-atm-directory"));
+  const sso = fresh();
+  entry(sso, "svc-obs-grafana").audiences = ["svc-cmp-evidence"];
+  failsWith(sso, want("svc-obs-grafana", "svc-cmp-evidence"));
+  const stale = fresh();
+  entry(stale, "svc-cus-profile-kyc").audienceProvenance["svc-rsk-decisioning"] = "derived (platform pillar)";
+  failsWith(stale, "svc-cus-profile-kyc: audienceProvenance svc-rsk-decisioning names no registry audience of this client");
+});
+
 test("payment initiation tokens carry the customer audience (kyc-status call)", () => {
   const input = fresh();
   const auds = client(input, "svc-pay-initiation-settlement").protocolMappers

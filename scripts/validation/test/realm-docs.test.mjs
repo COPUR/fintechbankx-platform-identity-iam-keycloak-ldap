@@ -138,3 +138,11 @@ test("the REALM_AS_CODE.md audience table names exactly the registry audiences o
     assert.deepEqual(named, [...c.audiences].sort(), `${c.clientId} row`);
   }
 });
+
+// The README overview counts the service clients of the registry.
+test("README.md counts every service client of the registry", () => {
+  const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  const counts = [...readme.matchAll(/(\d+) service clients/g)].map((m) => Number(m[1]));
+  assert.ok(counts.length > 0, "README.md has no \"N service clients\"");
+  for (const n of counts) assert.equal(n, registry.clients.length, "README.md service client count");
+});
