@@ -47,16 +47,17 @@ const audienceMappers = (audiences) => audiences.map((aud) => ({
 }));
 // A callee with registry audienceByScope: true is reached only through the
 // optional client scope aud-<callee>, which carries its audience mapper. Its
-// callers get that scope as optional instead of a mapper, so a caller's token
-// carries the callee in aud only when it requests scope=aud-<callee>; the
-// tokens it sends to its other callees do not (one client per service stays).
+// callers (service or channel clients whose registry audiences list it) get
+// that scope as optional instead of a mapper, so a caller's token carries the
+// callee in aud only when it requests scope=aud-<callee>; the tokens it sends
+// to its other callees do not (one client per service stays).
 const scopedCallees = new Set(manifest.clients.filter((c) => c.audienceByScope === true).map((c) => c.clientId));
 const audienceScopeName = (aud) => `aud-${aud}`;
 const mappedAudiences = (audiences) => audiences.filter((a) => !scopedCallees.has(a));
 const audienceScopesOf = (audiences) => audiences.filter((a) => scopedCallees.has(a)).map(audienceScopeName).sort();
 const audienceScopes = [...scopedCallees].sort().map((aud) => ({
   name: audienceScopeName(aud),
-  description: `Adds aud=${aud} to the client-credentials tokens of the service clients that request this scope (optional scope on the callers listed in realm/service-clients.json).`,
+  description: `Adds aud=${aud} to the access tokens of the clients that request this scope (optional scope on the callers listed in realm/service-clients.json).`,
   protocol: "openid-connect",
   attributes: { "include.in.token.scope": "true", "display.on.consent.screen": "false" },
   protocolMappers: audienceMappers([aud])
@@ -240,8 +241,8 @@ const serviceClients = manifest.clients.map((c) => ({
 // First-party public clients. Each serves one user type (registry userType):
 // customer clients map only the customer role and add the customer-id scope;
 // the staff client maps only the staff roles, has short sessions and no
-// optional scopes. Offline tokens only where the registry says offlineAccess
-// (mobile), with client offline-session limits.
+// optional scopes but its audience scopes. Offline tokens only where the
+// registry says offlineAccess (mobile), with client offline-session limits.
 const STAFF_ROLES = ["banker", "loan_officer", "admin", "auditor", "compliance_officer"];
 const rolesOfUserType = (t) => (t === "staff" ? STAFF_ROLES : ["customer"]);
 const publicClient = (clientId, name, redirectEnv, originEnv, logoutEnv) => {
@@ -277,9 +278,9 @@ const publicClient = (clientId, name, redirectEnv, originEnv, logoutEnv) => {
     logoutEnv ? { "post.logout.redirect.uris": env(logoutEnv) } : {},
     staff ? { "client.session.idle.timeout": "900", "client.session.max.lifespan": "28800" } : {},
     entry.offlineAccess ? { "client.offline.session.idle.timeout": "1209600", "client.offline.session.max.lifespan": "2592000" } : {}),
-    protocolMappers: audienceMappers(entry.audiences),
+    protocolMappers: audienceMappers(mappedAudiences(entry.audiences)),
     defaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email", ...(staff ? [] : [CUSTOMER_ID_SCOPE])],
-    optionalClientScopes: entry.offlineAccess ? ["offline_access"] : []
+    optionalClientScopes: [...(entry.offlineAccess ? ["offline_access"] : []), ...audienceScopesOf(entry.audiences)]
   };
 };
 
@@ -318,9 +319,9 @@ const tppTemplate = {
     "oauth2.device.authorization.grant.enabled": "false",
     "oidc.ciba.grant.enabled": "false"
   },
-  protocolMappers: audienceMappers(channel["of-tpp-conformance-template"].audiences),
+  protocolMappers: audienceMappers(mappedAudiences(channel["of-tpp-conformance-template"].audiences)),
   defaultClientScopes: ["basic", "acr", "roles", CUSTOMER_ID_SCOPE, CLIENT_TYPE_SCOPE],
-  optionalClientScopes: [PAYMENTS_SCOPE]
+  optionalClientScopes: [PAYMENTS_SCOPE, ...audienceScopesOf(channel["of-tpp-conformance-template"].audiences)]
 };
 
 const attrMapper = (name, ldapAttr, modelAttr, mandatory) => ({

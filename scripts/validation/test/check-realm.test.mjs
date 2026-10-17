@@ -192,10 +192,13 @@ test("risk and compliance audiences moved from the customer web client to staff 
   assert.ok(checkRealm(input).some((e) => e.includes("fintechbankx-web: staff-only audience svc-cmp-evidence on a customer client")));
 });
 
-test("staff web: short sessions, no optional scopes, no customer-id scope", () => {
+test("staff web: short sessions, no optional scopes but the ledger audience scope, no customer-id scope", () => {
   const input = fresh();
   const c = client(input, "fintechbankx-staff-web");
-  assert.deepEqual(c.optionalClientScopes, []);
+  assert.deepEqual(c.optionalClientScopes, [LEDGER_SCOPE]);
+  const other = fresh();
+  client(other, "fintechbankx-staff-web").optionalClientScopes.push("phone");
+  failsWith(other, "fintechbankx-staff-web: staff clients may have no optional scopes but their registry audience scopes");
   assert.ok(!c.defaultClientScopes.includes("customer-id"));
   assert.equal(c.attributes["client.session.idle.timeout"], "900");
   assert.equal(c.attributes["client.session.max.lifespan"], "28800");
@@ -675,9 +678,10 @@ test("the accounts ledger has a confidential client-credentials client in namesp
 
 // The ledger's SERVICE_CALLERS (its chart values and README, and
 // docs/CONSUMER_CONTRACT.md) call it with client-credentials tokens whose aud
-// must contain svc-acc-accounts-ledger. Channel clients (web, mobile, staff
-// web, TPP template) and the staff SSO client do not get the audience here:
-// customer and staff reads through them are a separate decision.
+// must contain svc-acc-accounts-ledger. Of the channel clients only staff web
+// gets the audience (staff-only decision 2026-10-17, below); customer web,
+// mobile, the TPP template and the staff SSO client do not: customer reads
+// through them are a separate decision.
 //
 // The ledger is reached only through the optional client scope
 // aud-svc-acc-accounts-ledger (registry audienceByScope; Platform decision
@@ -729,11 +733,11 @@ test("the scope aud-svc-acc-accounts-ledger adds only the ledger audience to acc
   for (const c of input.realm.clients) assert.ok(!(c.defaultClientScopes || []).includes(LEDGER_SCOPE), `${c.clientId}: ${LEDGER_SCOPE} as default scope`);
 });
 
-test("no client carries the ledger audience as an always-on mapper, and only its four callers may request the scope", () => {
+test("no client carries the ledger audience as an always-on mapper, and only its four callers and staff web may request the scope", () => {
   const input = fresh();
   assert.deepEqual(withAudience(input, LEDGER), []);
-  assert.deepEqual(withOptionalScope(input, LEDGER_SCOPE), LEDGER_CALLERS);
-  for (const c of input.registry.channelClients) assert.ok(!c.audiences.includes(LEDGER), `${c.clientId} must not carry ${LEDGER}`);
+  assert.deepEqual(withOptionalScope(input, LEDGER_SCOPE), [...LEDGER_CALLERS, STAFF_WEB].sort());
+  for (const c of input.registry.channelClients.filter((x) => x.clientId !== STAFF_WEB)) assert.ok(!c.audiences.includes(LEDGER), `${c.clientId} must not carry ${LEDGER}`);
   for (const c of input.registry.ssoClients || []) assert.ok(!(c.audiences || []).includes(LEDGER), `${c.clientId} must not carry ${LEDGER}`);
 });
 
@@ -774,9 +778,84 @@ test("the gate refuses the ledger audience as a mapper, a missing, extra or defa
   assert.ok(checkRealm(stale).some((e) => e === "client scope aud-svc-cus-profile-kyc: no registry client with audienceByScope is named svc-cus-profile-kyc"), checkRealm(stale).join("\n"));
 
   const onChannel = fresh();
-  onChannel.registry.channelClients.find((c) => c.clientId === "fintechbankx-staff-web").audiences.push(LEDGER);
-  client(onChannel, "fintechbankx-staff-web").protocolMappers.push(ledgerMapper);
-  assert.ok(checkRealm(onChannel).some((e) => e.startsWith(`fintechbankx-staff-web: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE}`)), checkRealm(onChannel).join("\n"));
+  client(onChannel, STAFF_WEB).protocolMappers.push(ledgerMapper);
+  assert.ok(checkRealm(onChannel).some((e) => e.startsWith(`${STAFF_WEB}: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE}`)), checkRealm(onChannel).join("\n"));
+});
+
+// Staff web and the ledger (user decision 2026-10-17, option "Staff only"):
+// the staff SPA reaches the ledger's staff endpoints with the optional scope
+// aud-svc-acc-accounts-ledger, which it names in its authorization request.
+// Customer web, mobile, the TPP template, the staff SSO client and Keycloak's
+// built-ins stay without it. Endpoints read from the ledger repository
+// (AccountController, JournalEntryController @PreAuthorize).
+const STAFF_WEB = "fintechbankx-staff-web";
+const STAFF_LEDGER_PROVENANCE = "derived (platform pillar, staff-only decision 2026-10-17): staff endpoints of the accounts ledger (GET /api/v1/accounts/{accountId}, account open, freeze, unfreeze and close for banker and admin; GET /api/v1/journal-entries/{journalEntryId} for banker and admin; POST /api/v1/journal-entries for admin), not yet confirmed by the accounts ledger thread";
+const NOT_LEDGER_CHANNELS = ["fintechbankx-web", "fintechbankx-mobile", "of-tpp-conformance-template"];
+const notRegistryScope = (id) => `${id}: optional audience scopes ${LEDGER_SCOPE} are only for the registry clients (service or channel) whose registry audiences list the callee`;
+const staffLedgerMapper = () => ({ name: `aud-${LEDGER}`, protocol: "openid-connect", protocolMapper: "oidc-audience-mapper", consentRequired: false,
+  config: { "included.client.audience": LEDGER, "access.token.claim": "true", "id.token.claim": "false", "introspection.token.claim": "true", "lightweight.claim": "false" } });
+
+test("staff web reaches the ledger only through the optional scope aud-svc-acc-accounts-ledger (staff-only decision 2026-10-17)", () => {
+  const input = fresh();
+  const entry = input.registry.channelClients.find((c) => c.clientId === STAFF_WEB);
+  assert.ok(entry.audiences.includes(LEDGER), `registry audience ${LEDGER} missing on ${STAFF_WEB}`);
+  assert.equal(entry.audienceProvenance[LEDGER], STAFF_LEDGER_PROVENANCE);
+  const c = client(input, STAFF_WEB);
+  assert.deepEqual(c.optionalClientScopes, [LEDGER_SCOPE]);
+  assert.ok(!c.defaultClientScopes.includes(LEDGER_SCOPE));
+  assert.ok(!auds(input, STAFF_WEB).includes(LEDGER), `${STAFF_WEB}: ${LEDGER} must not be an always-on audience mapper`);
+  for (const id of NOT_LEDGER_CHANNELS) {
+    assert.ok(!input.registry.channelClients.find((x) => x.clientId === id).audiences.includes(LEDGER), id);
+    assert.ok(![...client(input, id).defaultClientScopes, ...client(input, id).optionalClientScopes].includes(LEDGER_SCOPE), id);
+  }
+  for (const s of input.registry.ssoClients) assert.ok(!(client(input, s.clientId).optionalClientScopes || []).includes(LEDGER_SCOPE), s.clientId);
+});
+
+// The gate cases, applied to the realm file (static) and to a running realm
+// (--live through the admin API and --live-export, which must agree).
+const STAFF_LEDGER_CASES = [
+  ["staff web without the scope", (clients) => { clients(STAFF_WEB).optionalClientScopes = []; },
+    [`${STAFF_WEB}: optional audience scopes <none> != registry ${LEDGER_SCOPE}`]],
+  ["the scope as a default scope of staff web", (clients) => { const c = clients(STAFF_WEB); c.optionalClientScopes = []; c.defaultClientScopes.push(LEDGER_SCOPE); },
+    [`${STAFF_WEB}: audience scope ${LEDGER_SCOPE} must be optional, not default`, `${STAFF_WEB}: optional audience scopes <none> != registry ${LEDGER_SCOPE}`]],
+  ["a ledger mapper on staff web", (clients) => clients(STAFF_WEB).protocolMappers.push(staffLedgerMapper()),
+    [`${STAFF_WEB}: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope), never through a mapper`]],
+  ...NOT_LEDGER_CHANNELS.map((id) => [`the scope on ${id}`, (clients) => clients(id).optionalClientScopes.push(LEDGER_SCOPE),
+    [`${id}: optional audience scopes ${LEDGER_SCOPE} != registry <none>`]]),
+  ["the scope on svc-obs-grafana", (clients) => clients("svc-obs-grafana").optionalClientScopes.push(LEDGER_SCOPE), [notRegistryScope("svc-obs-grafana")]]
+];
+
+test("staff web: the gate requires the ledger scope there as optional, refuses it as default or as a mapper, and on any other channel or SSO client", () => {
+  for (const [name, mutate, expected] of STAFF_LEDGER_CASES) {
+    const input = fresh();
+    mutate((id) => client(input, id));
+    for (const e of expected) failsWith(input, e);
+    assert.ok(checkRealm(input).length > 0, name);
+  }
+  // A ledger mapper on staff web also breaks the mapper list.
+  const mapped = fresh();
+  client(mapped, STAFF_WEB).protocolMappers.push(staffLedgerMapper());
+  assert.ok(checkRealm(mapped).some((e) => e.startsWith(`${STAFF_WEB}: audience mappers `) && e.includes(LEDGER)), checkRealm(mapped).join("\n"));
+  // A client outside the registry (a Keycloak built-in) with the scope.
+  const builtIn = fresh();
+  builtIn.realm.clients.push({ clientId: "admin-cli", fullScopeAllowed: false, attributes: {}, protocolMappers: [], defaultClientScopes: [], optionalClientScopes: [LEDGER_SCOPE] });
+  failsWith(builtIn, notRegistryScope("admin-cli"));
+});
+
+test("live: staff web holds the ledger scope exactly there, the same through the admin API and a partial export", async () => {
+  const cases = [
+    ...STAFF_LEDGER_CASES,
+    ["the scope on admin-cli", (clients) => clients("admin-cli").optionalClientScopes.push(LEDGER_SCOPE), [notRegistryScope("admin-cli")]],
+    ["the scope on a runtime TPP client", (clients, l) => l.clients.push({ ...structuredClone(clients("of-tpp-conformance-template")), id: "id-of-tpp-acme-pay", clientId: "of-tpp-acme-pay", optionalClientScopes: ["payments", LEDGER_SCOPE] }),
+      [notRegistryScope("of-tpp-acme-pay")]],
+    ["staff web missing", (_clients, l) => { l.clients = l.clients.filter((c) => c.clientId !== STAFF_WEB); }, [`channel client ${STAFF_WEB} missing from realm`]]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const live = liveRealm();
+    mutate((id) => liveClient(live, id), live);
+    const errors = await liveErrors(live);
+    for (const e of expected) assert.ok(errors.includes(e), `${name}: ${e} not in\n${errors.join("\n")}`);
+  }
 });
 
 // DevSecOps review (should-fix 1): a by-scope callee's audience reaches a

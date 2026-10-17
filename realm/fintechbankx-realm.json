@@ -128,7 +128,7 @@
     },
     {
       "name": "aud-svc-acc-accounts-ledger",
-      "description": "Adds aud=svc-acc-accounts-ledger to the client-credentials tokens of the service clients that request this scope (optional scope on the callers listed in realm/service-clients.json).",
+      "description": "Adds aud=svc-acc-accounts-ledger to the access tokens of the clients that request this scope (optional scope on the callers listed in realm/service-clients.json).",
       "protocol": "openid-connect",
       "attributes": {
         "include.in.token.scope": "true",
@@ -1363,7 +1363,9 @@
         "roles",
         "email"
       ],
-      "optionalClientScopes": []
+      "optionalClientScopes": [
+        "aud-svc-acc-accounts-ledger"
+      ]
     },
     {
       "clientId": "fintechbankx-mobile",

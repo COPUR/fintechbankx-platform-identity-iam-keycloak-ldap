@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, CLIENT_TYPE_CLAIM, TPP_CLIENT_TYPE_SCOPE, DCR_SOURCES, DCR_POLICY_TYPE, tppClientErrors, clientTypeMappers, liveTppErrors, parseList, fetchClients } from "../realm/tpp-rules.mjs";
 import { fetchAdminToken } from "../realm/apply-admin-permissions.mjs";
-import { audiences, scopedCalleesOf, serviceClientErrors } from "../realm/service-client-rules.mjs";
+import { AUDIENCE_SCOPE, audiences, scopedCalleesOf, serviceClientErrors } from "../realm/service-client-rules.mjs";
 
 export const CONTRACT_ROLES = ["customer", "banker", "loan_officer", "admin", "service", "auditor", "compliance_officer"];
 export const STAFF_ROLE_GROUPS = {
@@ -132,21 +132,18 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     else if (sa && !Array.isArray(sa.clientRoles?.["realm-management"])) err(`${c.clientId}: service account must list clientRoles realm-management: [] (so keycloak-config-cli removes earlier grants)`);
     if ((realm.clientScopeMappings?.["realm-management"] || []).some((m) => m.client === c.clientId)) err(`${c.clientId}: realm-management scope mapping is not allowed`);
   }
-  // Audience mappers and optional audience scopes against the registry, the
-  // by-scope callees reached only through their aud- scope (no client mapper,
-  // other scope, realm default or client-role scope mapping), and
-  // fullScopeAllowed false on every client.
+  // Audience mappers and optional audience scopes of service and channel
+  // clients against the registry, the by-scope callees reached only through
+  // their aud- scope (no client mapper, other scope, realm default or
+  // client-role scope mapping), and fullScopeAllowed false on every client.
   for (const m of serviceClientErrors(realm, registry)) err(m);
 
-  // Channel clients: web, mobile, TPP template.
+  // Channel clients: web, mobile, TPP template. A missing one, audience
+  // mappers and optional audience scopes: serviceClientErrors.
   for (const entry of registry.channelClients || []) {
     const c = clients.get(entry.clientId);
-    if (!c) { err(`channel client ${entry.clientId} missing from realm`); continue; }
-    const want = [...(entry.audiences || [])].sort();
-    if (want.length === 0) err(`${entry.clientId}: registry must list at least one audience`);
-    if (JSON.stringify(audiences(c)) !== JSON.stringify(want)) {
-      err(`${c.clientId}: audience mappers ${audiences(c).join(",") || "<none>"} != registry ${want.join(",")}`);
-    }
+    if (!c) continue;
+    if (!(entry.audiences || []).length) err(`${entry.clientId}: registry must list at least one audience`);
     if (entry.type === "first-party-public") {
       if (c.publicClient !== true) err(`${c.clientId}: must be public`);
       if (c.secret) err(`${c.clientId}: public client must not have a secret`);
@@ -168,7 +165,7 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
         if (!inRange(c.attributes?.["client.offline.session.max.lifespan"], MAX_OFFLINE_LIFESPAN)) e(`client.offline.session.max.lifespan must be 1..${MAX_OFFLINE_LIFESPAN}`);
       }
       if (staff) {
-        if ((c.optionalClientScopes || []).length) e("staff clients must not have optional scopes");
+        if ((c.optionalClientScopes || []).some((s) => !AUDIENCE_SCOPE.test(s))) e("staff clients may have no optional scopes but their registry audience scopes");
         if (scopes.includes(CUSTOMER_ID_SCOPE)) e("staff clients must not carry the customer-id scope");
         if (!inRange(c.attributes?.["client.session.idle.timeout"], MAX_STAFF_IDLE)) e(`client.session.idle.timeout must be 1..${MAX_STAFF_IDLE}`);
         if (!inRange(c.attributes?.["client.session.max.lifespan"], MAX_STAFF_LIFESPAN)) e(`client.session.max.lifespan must be 1..${MAX_STAFF_LIFESPAN}`);
