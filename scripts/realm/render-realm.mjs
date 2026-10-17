@@ -45,6 +45,22 @@ const audienceMappers = (audiences) => audiences.map((aud) => ({
     "lightweight.claim": "false"
   }
 }));
+// A callee with registry audienceByScope: true is reached only through the
+// optional client scope aud-<callee>, which carries its audience mapper. Its
+// callers get that scope as optional instead of a mapper, so a caller's token
+// carries the callee in aud only when it requests scope=aud-<callee>; the
+// tokens it sends to its other callees do not (one client per service stays).
+const scopedCallees = new Set(manifest.clients.filter((c) => c.audienceByScope === true).map((c) => c.clientId));
+const audienceScopeName = (aud) => `aud-${aud}`;
+const mappedAudiences = (audiences) => audiences.filter((a) => !scopedCallees.has(a));
+const audienceScopesOf = (audiences) => audiences.filter((a) => scopedCallees.has(a)).map(audienceScopeName).sort();
+const audienceScopes = [...scopedCallees].sort().map((aud) => ({
+  name: audienceScopeName(aud),
+  description: `Adds aud=${aud} to the client-credentials tokens of the service clients that request this scope (optional scope on the callers listed in realm/service-clients.json).`,
+  protocol: "openid-connect",
+  attributes: { "include.in.token.scope": "true", "display.on.consent.screen": "false" },
+  protocolMappers: audienceMappers([aud])
+}));
 // End-user id claim for resource servers: user attribute customer_id (set by
 // customer onboarding, admin-edit only) -> access-token claim customer_id.
 // Default scope for the channel clients, the TPP template and, via
@@ -216,9 +232,9 @@ const serviceClients = manifest.clients.map((c) => ({
     "oauth2.device.authorization.grant.enabled": "false",
     "oidc.ciba.grant.enabled": "false"
   },
-  protocolMappers: audienceMappers(c.audiences),
+  protocolMappers: audienceMappers(mappedAudiences(c.audiences)),
   defaultClientScopes: ["basic", "roles"],
-  optionalClientScopes: []
+  optionalClientScopes: audienceScopesOf(c.audiences)
 }));
 
 // First-party public clients. Each serves one user type (registry userType):
@@ -397,7 +413,7 @@ const realm = {
   adminEventsEnabled: true,
   adminEventsDetailsEnabled: true,
 
-  clientScopes: [customerIdScope, paymentsScope, clientTypeScope],
+  clientScopes: [customerIdScope, paymentsScope, clientTypeScope, ...audienceScopes],
   defaultDefaultClientScopes: ["basic", "web-origins", "acr", "profile", "roles", "email", CUSTOMER_ID_SCOPE],
   userProfile,
 

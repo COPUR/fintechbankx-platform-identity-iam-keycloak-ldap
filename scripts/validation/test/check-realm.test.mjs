@@ -584,30 +584,103 @@ test("the accounts ledger has a confidential client-credentials client in namesp
 // must contain svc-acc-accounts-ledger. Channel clients (web, mobile, staff
 // web, TPP template) and the staff SSO client do not get the audience here:
 // customer and staff reads through them are a separate decision.
+//
+// The ledger is reached only through the optional client scope
+// aud-svc-acc-accounts-ledger (registry audienceByScope; Platform decision
+// 2026-10-17 on Lending's shared-client question): one client per service
+// stays, and a caller's token carries the ledger audience only when it asks
+// for that scope, so the tokens it sends to customer or consent never do.
 const LEDGER_CALLERS = ["svc-ln-loan-lifecycle", "svc-pay-bulk-orchestration", "svc-pay-initiation-settlement", "svc-pay-recurring-mandates"];
-const LEDGER_PROVENANCE = "accounts ledger thread 2026-10-17: docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS";
+const LEDGER_PROVENANCE = "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)";
+const LEDGER_SCOPE = "aud-svc-acc-accounts-ledger";
 const withAudience = (input, aud) => input.realm.clients
   .filter((c) => (c.protocolMappers || []).some((m) => m.protocolMapper === "oidc-audience-mapper" && m.config?.["included.client.audience"] === aud))
   .map((c) => c.clientId)
   .sort();
+const withOptionalScope = (input, name) => input.realm.clients
+  .filter((c) => (c.optionalClientScopes || []).includes(name))
+  .map((c) => c.clientId)
+  .sort();
 
-test("the four SERVICE_CALLERS of the accounts ledger carry its audience, with provenance", () => {
+test("the four SERVICE_CALLERS of the accounts ledger reach it only through the optional scope aud-svc-acc-accounts-ledger, with provenance", () => {
   const input = fresh();
+  assert.equal(input.registry.clients.find((c) => c.clientId === LEDGER).audienceByScope, true);
   for (const id of LEDGER_CALLERS) {
-    assert.ok(auds(input, id).includes(LEDGER), `${id}: aud ${LEDGER} missing`);
     const entry = input.registry.clients.find((c) => c.clientId === id);
+    assert.ok(entry.audiences.includes(LEDGER), `${id}: registry audience ${LEDGER} missing`);
     assert.equal(entry.audienceProvenance[LEDGER], LEDGER_PROVENANCE, id);
+    assert.ok(!auds(input, id).includes(LEDGER), `${id}: ${LEDGER} must not be an always-on audience mapper`);
+    assert.ok(client(input, id).optionalClientScopes.includes(LEDGER_SCOPE), `${id}: optional scope ${LEDGER_SCOPE} missing`);
+    assert.ok(!client(input, id).defaultClientScopes.includes(LEDGER_SCOPE), `${id}: ${LEDGER_SCOPE} must not be a default scope`);
   }
-  // Earlier audiences of the callers stay as they were.
-  assert.deepEqual(auds(input, "svc-ln-loan-lifecycle"), [LEDGER, "svc-cus-profile-kyc"].sort());
-  assert.deepEqual(auds(input, "svc-pay-recurring-mandates"), [LEDGER, "svc-of-consent-authorization"].sort());
-  assert.deepEqual(auds(input, "svc-pay-bulk-orchestration"), [LEDGER, "svc-of-consent-authorization"].sort());
-  assert.deepEqual(auds(input, "svc-pay-initiation-settlement"), [LEDGER, "svc-cmp-evidence", "svc-cus-profile-kyc", "svc-of-payee-verification", "svc-rsk-decisioning"].sort());
+  // The callers' other audiences stay always-on mappers, as before.
+  assert.deepEqual(auds(input, "svc-ln-loan-lifecycle"), ["svc-cus-profile-kyc"]);
+  assert.deepEqual(auds(input, "svc-pay-recurring-mandates"), ["svc-of-consent-authorization"]);
+  assert.deepEqual(auds(input, "svc-pay-bulk-orchestration"), ["svc-of-consent-authorization"]);
+  assert.deepEqual(auds(input, "svc-pay-initiation-settlement"), ["svc-cmp-evidence", "svc-cus-profile-kyc", "svc-of-payee-verification", "svc-rsk-decisioning"]);
 });
 
-test("no client other than the four ledger callers carries the ledger audience (channel and SSO clients excluded)", () => {
+test("the scope aud-svc-acc-accounts-ledger adds only the ledger audience to access tokens and is never a default scope", () => {
   const input = fresh();
-  assert.deepEqual(withAudience(input, LEDGER), LEDGER_CALLERS);
+  const s = (input.realm.clientScopes || []).find((x) => x.name === LEDGER_SCOPE);
+  assert.ok(s, `client scope ${LEDGER_SCOPE} missing`);
+  assert.equal(s.protocol, "openid-connect");
+  assert.equal(s.protocolMappers.length, 1);
+  const [m] = s.protocolMappers;
+  assert.equal(m.protocolMapper, "oidc-audience-mapper");
+  assert.equal(m.config["included.client.audience"], LEDGER);
+  assert.equal(m.config["access.token.claim"], "true");
+  assert.equal(m.config["id.token.claim"], "false");
+  assert.ok(!(input.realm.defaultDefaultClientScopes || []).includes(LEDGER_SCOPE));
+  for (const c of input.realm.clients) assert.ok(!(c.defaultClientScopes || []).includes(LEDGER_SCOPE), `${c.clientId}: ${LEDGER_SCOPE} as default scope`);
+});
+
+test("no client carries the ledger audience as an always-on mapper, and only its four callers may request the scope", () => {
+  const input = fresh();
+  assert.deepEqual(withAudience(input, LEDGER), []);
+  assert.deepEqual(withOptionalScope(input, LEDGER_SCOPE), LEDGER_CALLERS);
   for (const c of input.registry.channelClients) assert.ok(!c.audiences.includes(LEDGER), `${c.clientId} must not carry ${LEDGER}`);
   for (const c of input.registry.ssoClients || []) assert.ok(!(c.audiences || []).includes(LEDGER), `${c.clientId} must not carry ${LEDGER}`);
+});
+
+test("the gate refuses the ledger audience as a mapper, a missing, extra or default ledger scope, and a scope with another audience", () => {
+  const ledgerMapper = { name: `aud-${LEDGER}`, protocol: "openid-connect", protocolMapper: "oidc-audience-mapper", consentRequired: false,
+    config: { "included.client.audience": LEDGER, "access.token.claim": "true", "id.token.claim": "false", "introspection.token.claim": "true", "lightweight.claim": "false" } };
+  const asMapper = fresh();
+  client(asMapper, "svc-ln-loan-lifecycle").protocolMappers.push(ledgerMapper);
+  assert.ok(checkRealm(asMapper).some((e) => e.startsWith("svc-ln-loan-lifecycle: audience mappers")), checkRealm(asMapper).join("\n"));
+
+  const missing = fresh();
+  const bulk = client(missing, "svc-pay-bulk-orchestration");
+  bulk.optionalClientScopes = bulk.optionalClientScopes.filter((x) => x !== LEDGER_SCOPE);
+  assert.ok(checkRealm(missing).some((e) => e.startsWith(`svc-pay-bulk-orchestration: optional audience scopes <none> != registry ${LEDGER_SCOPE}`)), checkRealm(missing).join("\n"));
+
+  const extra = fresh();
+  client(extra, "svc-cus-profile-kyc").optionalClientScopes.push(LEDGER_SCOPE);
+  assert.ok(checkRealm(extra).some((e) => e.startsWith(`svc-cus-profile-kyc: optional audience scopes ${LEDGER_SCOPE} != registry <none>`)), checkRealm(extra).join("\n"));
+
+  const asDefault = fresh();
+  client(asDefault, "svc-pay-recurring-mandates").defaultClientScopes.push(LEDGER_SCOPE);
+  assert.ok(checkRealm(asDefault).some((e) => e === `svc-pay-recurring-mandates: audience scope ${LEDGER_SCOPE} must be optional, not default`), checkRealm(asDefault).join("\n"));
+
+  const realmDefault = fresh();
+  realmDefault.realm.defaultDefaultClientScopes.push(LEDGER_SCOPE);
+  assert.ok(checkRealm(realmDefault).some((e) => e === `realm: audience scope ${LEDGER_SCOPE} must not be a realm default scope`), checkRealm(realmDefault).join("\n"));
+
+  const otherAud = fresh();
+  otherAud.realm.clientScopes.find((x) => x.name === LEDGER_SCOPE).protocolMappers[0].config["included.client.audience"] = "svc-cus-profile-kyc";
+  assert.ok(checkRealm(otherAud).some((e) => e === `client scope ${LEDGER_SCOPE}: must carry exactly one access-token audience mapper for ${LEDGER}`), checkRealm(otherAud).join("\n"));
+
+  const gone = fresh();
+  gone.realm.clientScopes = gone.realm.clientScopes.filter((x) => x.name !== LEDGER_SCOPE);
+  assert.ok(checkRealm(gone).some((e) => e === `client scope ${LEDGER_SCOPE} missing (registry ${LEDGER} has audienceByScope)`), checkRealm(gone).join("\n"));
+
+  const stale = fresh();
+  stale.realm.clientScopes.push({ name: "aud-svc-cus-profile-kyc", protocol: "openid-connect", attributes: {}, protocolMappers: [] });
+  assert.ok(checkRealm(stale).some((e) => e === "client scope aud-svc-cus-profile-kyc: no registry client with audienceByScope is named svc-cus-profile-kyc"), checkRealm(stale).join("\n"));
+
+  const onChannel = fresh();
+  onChannel.registry.channelClients.find((c) => c.clientId === "fintechbankx-staff-web").audiences.push(LEDGER);
+  client(onChannel, "fintechbankx-staff-web").protocolMappers.push(ledgerMapper);
+  assert.ok(checkRealm(onChannel).some((e) => e.startsWith(`fintechbankx-staff-web: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE}`)), checkRealm(onChannel).join("\n"));
 });

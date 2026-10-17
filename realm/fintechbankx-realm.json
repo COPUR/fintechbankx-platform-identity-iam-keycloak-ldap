@@ -125,6 +125,30 @@
           }
         }
       ]
+    },
+    {
+      "name": "aud-svc-acc-accounts-ledger",
+      "description": "Adds aud=svc-acc-accounts-ledger to the client-credentials tokens of the service clients that request this scope (optional scope on the callers listed in realm/service-clients.json).",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-svc-acc-accounts-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-acc-accounts-ledger",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "defaultDefaultClientScopes": [
@@ -437,26 +461,15 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
-        },
-        {
-          "name": "aud-svc-acc-accounts-ledger",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "svc-acc-accounts-ledger",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true",
-            "lightweight.claim": "false"
-          }
         }
       ],
       "defaultClientScopes": [
         "basic",
         "roles"
       ],
-      "optionalClientScopes": []
+      "optionalClientScopes": [
+        "aud-svc-acc-accounts-ledger"
+      ]
     },
     {
       "clientId": "svc-pay-initiation-settlement",
@@ -539,26 +552,15 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
-        },
-        {
-          "name": "aud-svc-acc-accounts-ledger",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "svc-acc-accounts-ledger",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true",
-            "lightweight.claim": "false"
-          }
         }
       ],
       "defaultClientScopes": [
         "basic",
         "roles"
       ],
-      "optionalClientScopes": []
+      "optionalClientScopes": [
+        "aud-svc-acc-accounts-ledger"
+      ]
     },
     {
       "clientId": "svc-pay-recurring-mandates",
@@ -602,26 +604,15 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
-        },
-        {
-          "name": "aud-svc-acc-accounts-ledger",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "svc-acc-accounts-ledger",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true",
-            "lightweight.claim": "false"
-          }
         }
       ],
       "defaultClientScopes": [
         "basic",
         "roles"
       ],
-      "optionalClientScopes": []
+      "optionalClientScopes": [
+        "aud-svc-acc-accounts-ledger"
+      ]
     },
     {
       "clientId": "svc-pay-bulk-orchestration",
@@ -665,26 +656,15 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
-        },
-        {
-          "name": "aud-svc-acc-accounts-ledger",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "svc-acc-accounts-ledger",
-            "access.token.claim": "true",
-            "id.token.claim": "false",
-            "introspection.token.claim": "true",
-            "lightweight.claim": "false"
-          }
         }
       ],
       "defaultClientScopes": [
         "basic",
         "roles"
       ],
-      "optionalClientScopes": []
+      "optionalClientScopes": [
+        "aud-svc-acc-accounts-ledger"
+      ]
     },
     {
       "clientId": "svc-pay-request-to-pay",

@@ -35,6 +35,15 @@ function audiences(client) {
     .sort();
 }
 
+// Audience scopes (registry audienceByScope): such a callee is reached only
+// through the optional client scope aud-<callee>, which holds its audience
+// mapper, never through a mapper on a client.
+export const audienceScopeName = (aud) => `aud-${aud}`;
+const AUDIENCE_SCOPE = /^aud-/;
+function audienceScopes(client) {
+  return (client.optionalClientScopes || []).filter((s) => AUDIENCE_SCOPE.test(s)).sort();
+}
+
 function walk(value, visit, trail = []) {
   if (Array.isArray(value)) {
     value.forEach((v, i) => walk(v, visit, [...trail, i]));
@@ -104,6 +113,7 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
 
   const clients = new Map((realm.clients || []).map((c) => [c.clientId, c]));
   const knownIds = new Set(clients.keys());
+  const scopedCallees = new Set(registry.clients.filter((c) => c.audienceByScope === true).map((c) => c.clientId));
 
   // Service clients: one per registry entry, client credentials only.
   for (const entry of registry.clients) {
@@ -131,9 +141,13 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     if ((sa?.clientRoles?.["realm-management"] || []).length) err(`${c.clientId}: service account must not hold realm-management roles`);
     else if (sa && !Array.isArray(sa.clientRoles?.["realm-management"])) err(`${c.clientId}: service account must list clientRoles realm-management: [] (so keycloak-config-cli removes earlier grants)`);
     if ((realm.clientScopeMappings?.["realm-management"] || []).some((m) => m.client === c.clientId)) err(`${c.clientId}: realm-management scope mapping is not allowed`);
-    const want = [...(entry.audiences || [])].sort();
+    const want = (entry.audiences || []).filter((a) => !scopedCallees.has(a)).sort();
     if (JSON.stringify(audiences(c)) !== JSON.stringify(want)) {
       err(`${c.clientId}: audience mappers ${audiences(c).join(",") || "<none>"} != registry ${want.join(",") || "<none>"}`);
+    }
+    const wantScopes = (entry.audiences || []).filter((a) => scopedCallees.has(a)).map(audienceScopeName).sort();
+    if (JSON.stringify(audienceScopes(c)) !== JSON.stringify(wantScopes)) {
+      err(`${c.clientId}: optional audience scopes ${audienceScopes(c).join(",") || "<none>"} != registry ${wantScopes.join(",") || "<none>"}`);
     }
   }
 
@@ -213,9 +227,36 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     ...(registry.channelClients || []).map((c) => c.clientId),
     ...(registry.ssoClients || []).map((c) => c.clientId)
   ]);
+  const serviceClientIds = new Set(registry.clients.map((c) => c.clientId));
   for (const c of clients.values()) {
     if (!registered.has(c.clientId)) err(`client ${c.clientId} is not in realm/service-clients.json`);
     for (const a of audiences(c)) if (!knownIds.has(a)) err(`${c.clientId}: audience ${a} is not a client of the realm`);
+    for (const a of audiences(c)) {
+      if (scopedCallees.has(a)) err(`${c.clientId}: audience ${a} is reached only through the optional scope ${audienceScopeName(a)} (registry audienceByScope), never through a mapper`);
+    }
+    if (!serviceClientIds.has(c.clientId) && audienceScopes(c).length) err(`${c.clientId}: optional audience scopes are for service clients only`);
+    for (const name of c.defaultClientScopes || []) if (AUDIENCE_SCOPE.test(name)) err(`${c.clientId}: audience scope ${name} must be optional, not default`);
+  }
+
+  // One audience scope per audienceByScope callee, holding exactly one
+  // access-token audience mapper for it; never a realm default (a client
+  // created without explicit scopes would get it).
+  const audienceScopeByName = new Map((realm.clientScopes || []).filter((s) => AUDIENCE_SCOPE.test(s.name)).map((s) => [s.name, s]));
+  for (const aud of scopedCallees) {
+    const name = audienceScopeName(aud);
+    const s = audienceScopeByName.get(name);
+    if (!s) { err(`client scope ${name} missing (registry ${aud} has audienceByScope)`); continue; }
+    const ms = s.protocolMappers || [];
+    const ok = s.protocol === "openid-connect" && ms.length === 1 && ms[0].protocolMapper === "oidc-audience-mapper"
+      && ms[0].config?.["included.client.audience"] === aud && ms[0].config?.["access.token.claim"] === "true";
+    if (!ok) err(`client scope ${name}: must carry exactly one access-token audience mapper for ${aud}`);
+  }
+  for (const name of audienceScopeByName.keys()) {
+    const aud = name.slice("aud-".length);
+    if (!scopedCallees.has(aud)) err(`client scope ${name}: no registry client with audienceByScope is named ${aud}`);
+  }
+  for (const name of [...(realm.defaultDefaultClientScopes || []), ...(realm.defaultOptionalClientScopes || [])]) {
+    if (AUDIENCE_SCOPE.test(name)) err(`realm: audience scope ${name} must not be a realm default scope`);
   }
 
   // Fine-grained admin permissions (applied by scripts/realm/apply-admin-permissions.mjs).
