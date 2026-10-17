@@ -40,10 +40,13 @@
 // fails it is deleted again (a spec listed suspended is created and left
 // disabled).
 //
-// usage: node onboard-tpp.mjs (--tpp <spec.json> | --tpps <list.json>) [--realm <realm.json>] [--dry-run] [--verify-live]
+// usage: node onboard-tpp.mjs (--tpp <spec.json> | --tpps <list.json>) [--realm <realm.json>] [--dry-run] [--verify-live [--registry <service-clients.json>]]
 //   list.json: {"tpps": [spec, ...]}
-//   --verify-live: afterwards, fail when any client of the realm breaks the
-//                  TPP rules (same check as check-realm.mjs --live); with
+//   --verify-live: afterwards, fail when the running realm breaks the TPP
+//                  rules or the service-client rules with the registry
+//                  (--registry, default realm/service-clients.json next to
+//                  this script's repository; the same check as
+//                  check-realm.mjs --live, through live-view.mjs); with
 //                  --tpps (the complete list) also fail when an enabled
 //                  open-finance-tpp client is not listed or a listed-suspended
 //                  client is enabled, and warn when a listed-active client is
@@ -55,7 +58,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { fetchAdminToken } from "./apply-admin-permissions.mjs";
-import { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, TPP_CLIENT_TYPE_SCOPE, tppClientErrors, liveTppErrors, fetchClients } from "./tpp-rules.mjs";
+import { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, TPP_CLIENT_TYPE_SCOPE, tppClientErrors } from "./tpp-rules.mjs";
+import { fetchLiveView, liveRealmErrors } from "./live-view.mjs";
 
 export const TEMPLATE_CLIENT_ID = "of-tpp-conformance-template";
 const SPEC_FIELDS = ["clientId", "name", "redirectUris", "jwksUri", "jwks", "paymentServices", "status"];
@@ -280,10 +284,13 @@ if (isMain) {
     const realm = JSON.parse(fs.readFileSync(realmPath, "utf8"));
     const template = (realm.clients || []).find((c) => c.clientId === TEMPLATE_CLIENT_ID);
     if (!template) throw new Error(`${TEMPLATE_CLIENT_ID} not found in ${path.basename(realmPath)}`);
+    // Read before any write, so a missing registry changes nothing.
+    const verifyLive = process.argv.includes("--verify-live");
+    const registry = verifyLive ? JSON.parse(fs.readFileSync(arg("--registry") || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../realm/service-clients.json"), "utf8")) : undefined;
     let specs;
     if (arg("--tpp")) specs = [JSON.parse(fs.readFileSync(arg("--tpp"), "utf8"))];
     else if (arg("--tpps")) specs = JSON.parse(fs.readFileSync(arg("--tpps"), "utf8")).tpps || [];
-    else throw new Error("usage: onboard-tpp.mjs (--tpp <spec.json> | --tpps <list.json>) [--realm <realm.json>] [--dry-run] [--verify-live]");
+    else throw new Error("usage: onboard-tpp.mjs (--tpp <spec.json> | --tpps <list.json>) [--realm <realm.json>] [--dry-run] [--verify-live [--registry <service-clients.json>]]");
     const ids = specs.map((s) => s?.clientId);
     const dup = ids.find((x, i) => ids.indexOf(x) !== i);
     if (dup) throw new Error(`refusing: clientId ${dup} listed twice`);
@@ -303,9 +310,10 @@ if (isMain) {
         console.error(`onboard-tpp: ${e.message}`);
       }
     }
-    if (process.argv.includes("--verify-live")) {
-      const clients = await fetchClients({ baseUrl: process.env.KEYCLOAK_URL, token, realm: realm.realm });
-      const errors = liveTppErrors(clients);
+    if (verifyLive) {
+      const view = await fetchLiveView({ baseUrl: process.env.KEYCLOAK_URL, token, realm: realm.realm, registry });
+      const { clients } = view;
+      const errors = liveRealmErrors(view, registry);
       // The listing check needs the complete list, so only with --tpps.
       if (arg("--tpps")) {
         const listing = tppListingFindings(clients, specs);
@@ -314,7 +322,7 @@ if (isMain) {
       }
       for (const e of errors) console.error(`onboard-tpp: live: ${e}`);
       if (errors.length) failures.push(`${errors.length} live problem(s)`);
-      else out(`live check OK (${clients.length} clients, ${clients.filter((c) => c.attributes?.["fbx.client-type"] === TPP_CLIENT_TYPE).length} open-finance-tpp)`);
+      else out(`live check OK (${clients.length} clients, ${clients.filter((c) => c.attributes?.["fbx.client-type"] === TPP_CLIENT_TYPE).length} open-finance-tpp, ${registry.clients.length} service clients)`);
     }
     if (failures.length) {
       console.error(`onboard-tpp: FAILED (${failures.length})`);

@@ -1,6 +1,8 @@
-# Packs apply-admin-permissions.mjs, onboard-tpp.mjs and tpp-rules.mjs into a
+# Packs apply-admin-permissions.mjs, onboard-tpp.mjs and the modules it loads
+# (tpp-rules.mjs, live-view.mjs, service-client-rules.mjs) into a
 # ConfigMap for the second and third steps of the realm import Job (deploy/kustomize/base/realm-import/job.yaml). Kept
 # next to the script because kustomize only loads files under its own root.
+# check-realm.test.mjs fails when a module a Job script imports is missing.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
@@ -10,6 +12,8 @@ configMapGenerator:
       - apply-admin-permissions.mjs
       - onboard-tpp.mjs
       - tpp-rules.mjs
+      - live-view.mjs
+      - service-client-rules.mjs
     options:
       labels:
         app.kubernetes.io/name: keycloak-realm-import

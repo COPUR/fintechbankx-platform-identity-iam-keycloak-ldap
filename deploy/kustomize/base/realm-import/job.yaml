@@ -15,7 +15,13 @@
 # suspended disables, an operator-disabled active client stays disabled) and
 # fails the Job when any client of the running realm tagged
 # fbx.client-type=open-finance-tpp lacks the default client-type scope, is
-# enabled but not listed, or is enabled but listed suspended (--verify-live). All use the same bootstrap admin client;
+# enabled but not listed, or is enabled but listed suspended, or when the
+# running realm breaks the service-client rules of
+# scripts/realm/service-client-rules.mjs with the registry
+# realm/service-clients.json (--verify-live --registry; the same check as
+# check-realm.mjs --live: audience mappers and aud- scopes, the routes to the
+# ledger audience, fullScopeAllowed, stock protocol mappers only, no standard
+# token exchange). All use the same bootstrap admin client;
 # the Node steps receive only that credential.
 #
 # Re-run on every change: Argo CD runs it as a PostSync hook; with plain
@@ -132,7 +138,7 @@ spec:
         - name: tpp-onboarding
           image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
           imagePullPolicy: IfNotPresent
-          command: ["node", "/opt/fbx/script/onboard-tpp.mjs", "--tpps", "/opt/fbx/tpps/tpp-clients.json", "--realm", "/config/fintechbankx-realm.json", "--verify-live"]
+          command: ["node", "/opt/fbx/script/onboard-tpp.mjs", "--tpps", "/opt/fbx/tpps/tpp-clients.json", "--realm", "/config/fintechbankx-realm.json", "--verify-live", "--registry", "/opt/fbx/registry/service-clients.json"]
           env:
             - name: KEYCLOAK_URL
               valueFrom:
@@ -172,6 +178,9 @@ spec:
             - name: tpp-clients
               mountPath: /opt/fbx/tpps
               readOnly: true
+            - name: service-clients
+              mountPath: /opt/fbx/registry
+              readOnly: true
             - name: realm
               mountPath: /config
               readOnly: true
@@ -185,6 +194,9 @@ spec:
         - name: tpp-clients
           configMap:
             name: fintechbankx-realm-tpp-clients
+        - name: service-clients
+          configMap:
+            name: fintechbankx-realm-service-clients
         - name: realm
           configMap:
             name: fintechbankx-realm

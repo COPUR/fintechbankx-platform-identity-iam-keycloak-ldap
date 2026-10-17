@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import http from "node:http";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import YAML from "yaml";
 import * as realmCheck from "../../ci/check-realm.mjs";
 import { STOCK_PROTOCOL_MAPPERS } from "../../realm/service-client-rules.mjs";
 const { checkRealm, loadFromRepo, secretEnvName } = realmCheck;
@@ -1324,5 +1327,144 @@ test("standard token exchange is refused on every client, in all three modes", a
     const input = fresh();
     client(input, "svc-cus-profile-kyc").attributes[TOKEN_EXCHANGE] = v;
     assert.deepEqual(checkRealm(input), [], v);
+  }
+});
+
+// Known gap (4), closed: the realm import Job applies the service-client
+// rules to the running realm, not only the TPP rules. Its last step
+// (container tpp-onboarding) runs onboard-tpp.mjs --verify-live with the
+// registry realm/service-clients.json, through the same live view as
+// check-realm.mjs --live (scripts/realm/live-view.mjs). Read from the Job and
+// the kustomize ConfigMap generators it mounts, so a module or file missing
+// from a ConfigMap fails here, not in the cluster.
+const BASE_DIR = path.join(root, "deploy/kustomize/base");
+const job = YAML.parse(fs.readFileSync(path.join(BASE_DIR, "realm-import/job.yaml"), "utf8"));
+const jobPod = job.spec.template.spec;
+const jobContainer = (name) => [...(jobPod.initContainers || []), ...jobPod.containers].find((c) => c.name === name);
+// configMapGenerator entries of the base and its components: name -> { dir, files: key -> source path }.
+function configMapGenerators() {
+  const out = new Map();
+  const k = YAML.parse(fs.readFileSync(path.join(BASE_DIR, "kustomization.yaml"), "utf8"));
+  for (const dir of [BASE_DIR, ...(k.components || []).map((c) => path.resolve(BASE_DIR, c))]) {
+    const kz = YAML.parse(fs.readFileSync(path.join(dir, "kustomization.yaml"), "utf8"));
+    for (const g of kz.configMapGenerator || []) {
+      const files = new Map((g.files || []).map((f) => { const [key, src] = f.includes("=") ? f.split("=") : [path.basename(f), f]; return [key, path.join(dir, src)]; }));
+      out.set(g.name, { dir, files });
+    }
+  }
+  return out;
+}
+// The files a container sees under each mount of a generated ConfigMap: absolute container path -> repo file.
+function mountedFiles(container) {
+  const gens = configMapGenerators();
+  const out = new Map();
+  for (const m of container.volumeMounts || []) {
+    const v = jobPod.volumes.find((x) => x.name === m.name);
+    if (!v?.configMap) continue;
+    const g = gens.get(v.configMap.name);
+    assert.ok(g, `volume ${m.name}: ConfigMap ${v.configMap.name} has no configMapGenerator in the base or its components`);
+    assert.equal(v.configMap.items, undefined, `volume ${m.name}: items would hide keys`);
+    for (const [key, src] of g.files) out.set(path.posix.join(m.mountPath, key), src);
+  }
+  return out;
+}
+// Relative imports of an ES module (static, re-export and dynamic), resolved.
+const relativeImports = (file) => [...fs.readFileSync(file, "utf8").matchAll(/(?:\bimport\s*(?:[\w*{}\s,]+from\s*)?|\bexport\s*[\w*{}\s,]+from\s*|\bimport\s*\(\s*)["']([^"']+)["']/g)]
+  .map((m) => m[1]);
+
+test("the realm import Job runs the service-client rules: onboard-tpp.mjs --verify-live with the registry", () => {
+  const c = jobContainer("tpp-onboarding");
+  assert.deepEqual(c.command.slice(0, 2), ["node", "/opt/fbx/script/onboard-tpp.mjs"]);
+  assert.ok(c.command.includes("--verify-live"), c.command.join(" "));
+  const registry = c.command[c.command.indexOf("--registry") + 1];
+  assert.ok(c.command.includes("--registry"), c.command.join(" "));
+  const files = mountedFiles(c);
+  assert.equal(files.get(registry), path.join(root, "realm/service-clients.json"), `${registry} is not realm/service-clients.json`);
+  assert.ok(!registry.startsWith("/config/"), "keycloak-config-cli imports every *.json in /config");
+});
+
+test("every module a script of the Job imports, transitively, is in the ConfigMap mounted next to it", () => {
+  for (const c of [...(jobPod.initContainers || []), ...jobPod.containers].filter((x) => x.command?.[0] === "node")) {
+    const files = mountedFiles(c);
+    const todo = [c.command[1]];
+    const seen = new Set();
+    while (todo.length) {
+      const at = todo.pop();
+      if (seen.has(at)) continue;
+      seen.add(at);
+      assert.ok(files.has(at), `${c.name}: ${at} is not in a ConfigMap the container mounts`);
+      for (const spec of relativeImports(files.get(at))) {
+        if (spec.startsWith("node:")) continue;
+        assert.ok(spec.startsWith("./") || spec.startsWith("../"), `${c.name}: ${at} imports ${spec}; the node image has no node_modules`);
+        todo.push(path.posix.join(path.posix.dirname(at), spec));
+      }
+    }
+    // Every absolute path argument is a mounted file.
+    for (const a of c.command.slice(2).filter((x) => x.startsWith("/"))) assert.ok(files.has(a), `${c.name}: argument ${a} is not a mounted file`);
+  }
+  // The import parser sees the imports this repo uses.
+  assert.deepEqual(relativeImports(path.join(root, "scripts/realm/onboard-tpp.mjs")).filter((s) => !s.startsWith("node:")).sort(), ["./apply-admin-permissions.mjs", "./live-view.mjs", "./tpp-rules.mjs"]);
+});
+
+// The Job's tpp-onboarding command, run as the Job runs it: the files of each
+// mounted ConfigMap copied to their container paths under a temporary root,
+// the same env names, and an admin API that answers like Keycloak (adminApi).
+async function runJobStep(live, name = "tpp-onboarding") {
+  const c = jobContainer(name);
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "realm-import-job-"));
+  const api = adminApi(live);
+  const server = http.createServer(async (req, res) => {
+    req.resume();
+    const r = await api.fetch(`http://kc.test${req.url}`);
+    res.writeHead(r.status, { "content-type": "application/json" });
+    res.end(await r.text());
+  });
+  await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+  try {
+    for (const [to, from] of mountedFiles(c)) {
+      fs.mkdirSync(path.join(sandbox, path.dirname(to)), { recursive: true });
+      fs.copyFileSync(from, path.join(sandbox, to));
+    }
+    const importEnv = YAML.parse(fs.readFileSync(path.join(BASE_DIR, "realm-import/env.yaml"), "utf8")).data;
+    const env = { PATH: process.env.PATH };
+    for (const e of c.env) {
+      if (e.name === "KEYCLOAK_URL") env[e.name] = `http://127.0.0.1:${server.address().port}`;
+      else if (e.valueFrom?.configMapKeyRef) env[e.name] = importEnv[e.valueFrom.configMapKeyRef.key];
+      else env[e.name] = `test-${e.name.toLowerCase()}`;
+    }
+    const args = c.command.slice(1).map((a) => (a.startsWith("/") ? path.join(sandbox, a) : a));
+    try {
+      const { stdout, stderr } = await promisify(execFile)(process.execPath, args, { env, encoding: "utf8" });
+      return { code: 0, stdout, stderr, urls: api.urls };
+    } catch (e) {
+      return { code: e.code, stdout: e.stdout, stderr: e.stderr, urls: api.urls };
+    }
+  } finally {
+    server.close();
+    fs.rmSync(sandbox, { recursive: true });
+  }
+}
+
+test("the Job's tpp-onboarding step against a mock admin API passes the compliant realm and fails a ledger bypass", async () => {
+  const ok = await runJobStep(liveRealm());
+  assert.equal(ok.code, 0, ok.stderr);
+  assert.match(ok.stdout, /onboard-tpp: live check OK \(\d+ clients, 1 open-finance-tpp, 16 service clients\)/);
+  assert.ok(ok.urls.some((u) => u.endsWith("/admin/realms/fintechbankx/default-default-client-scopes")), ok.urls.join(" "));
+  const bypasses = [
+    ["ledger audience mapper on svc-cus-profile-kyc", (l) => liveClient(l, "svc-cus-profile-kyc").protocolMappers.push(ledgerAudMapper()),
+      `svc-cus-profile-kyc: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope), never through a mapper`],
+    ["ledger scope on fintechbankx-web", (l) => liveClient(l, "fintechbankx-web").optionalClientScopes.push(LEDGER_SCOPE),
+      `fintechbankx-web: optional audience scopes ${LEDGER_SCOPE} != registry <none>`],
+    ["aud claim mapper in the built-in scope roles", (l) => liveScope(l, "roles").protocolMappers.push(audClaimMapper()), audRouteErrors("client scope roles", audClaimMapper())],
+    ["script mapper on admin-cli", (l) => liveClient(l, "admin-cli").protocolMappers.push(scriptMapper("script-aud.js")), notStock("admin-cli", scriptMapper("script-aud.js"))],
+    ["standard token exchange on svc-ln-loan-lifecycle", (l) => { liveClient(l, "svc-ln-loan-lifecycle").attributes[TOKEN_EXCHANGE] = "true"; }, exchangeRefused("svc-ln-loan-lifecycle", "true")]
+  ];
+  for (const [name, mutate, expected] of bypasses) {
+    const live = liveRealm();
+    mutate(live);
+    const r = await runJobStep(live);
+    assert.equal(r.code, 1, `${name}: ${r.stdout}`);
+    assert.ok(r.stderr.includes(`onboard-tpp: live: ${expected}`), `${name}: ${r.stderr}`);
+    assert.match(r.stderr, /onboard-tpp: FAILED/, name);
   }
 });

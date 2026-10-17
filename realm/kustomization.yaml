@@ -30,3 +30,13 @@ configMapGenerator:
       labels:
         app.kubernetes.io/name: keycloak-realm-import
         app.kubernetes.io/part-of: fintechbankx-identity
+  # Client registry, read by the Job's last step (onboard-tpp.mjs
+  # --verify-live --registry) for the service-client rules; not a realm file
+  # for keycloak-config-cli.
+  - name: fintechbankx-realm-service-clients
+    files:
+      - service-clients.json
+    options:
+      labels:
+        app.kubernetes.io/name: keycloak-realm-import
+        app.kubernetes.io/part-of: fintechbankx-identity

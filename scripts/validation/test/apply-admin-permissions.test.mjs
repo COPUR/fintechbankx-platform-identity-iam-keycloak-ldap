@@ -174,25 +174,26 @@ test("scope mappings: a client of the realm file missing in Keycloak is an error
   await assert.rejects(reconcileScopeMappings({ fetch: f.fetch, baseUrl: BASE, token: "t", realm: { realm: "fintechbankx", scopeMappings: [{ client: "fintechbankx-web", roles: ["customer"] }] } }), /client fintechbankx-web not found/);
 });
 
-test("realm import Job: last step onboards the TPP list and fails on any non-conforming open-finance-tpp client, with only the bootstrap admin credential", async () => {
+test("realm import Job: last step onboards the TPP list and fails on any non-conforming open-finance-tpp client or service-client rule, with only the bootstrap admin credential", async () => {
   const fs = await import("node:fs");
   const YAML = (await import("yaml")).default;
   const read = (p) => fs.readFileSync(new URL(`../../../${p}`, import.meta.url), "utf8");
   const pod = YAML.parse(read("deploy/kustomize/base/realm-import/job.yaml")).spec.template.spec;
   const step = pod.containers.find((c) => c.name === "tpp-onboarding");
   assert.equal(step.image, pod.initContainers.find((c) => c.name === "admin-permissions").image);
-  assert.deepEqual(step.command, ["node", "/opt/fbx/script/onboard-tpp.mjs", "--tpps", "/opt/fbx/tpps/tpp-clients.json", "--realm", "/config/fintechbankx-realm.json", "--verify-live"]);
+  assert.deepEqual(step.command, ["node", "/opt/fbx/script/onboard-tpp.mjs", "--tpps", "/opt/fbx/tpps/tpp-clients.json", "--realm", "/config/fintechbankx-realm.json", "--verify-live", "--registry", "/opt/fbx/registry/service-clients.json"]);
   assert.equal(step.envFrom, undefined);
   assert.deepEqual(step.env.filter((e) => e.valueFrom.secretKeyRef).map((e) => e.valueFrom.secretKeyRef.key).sort(), ["KEYCLOAK_CLIENTID", "KEYCLOAK_CLIENTSECRET"]);
   assert.equal(step.securityContext.readOnlyRootFilesystem, true);
   const mounts = Object.fromEntries(step.volumeMounts.map((m) => [m.mountPath, m.name]));
-  assert.deepEqual(mounts, { "/opt/fbx/script": "admin-permissions-script", "/opt/fbx/tpps": "tpp-clients", "/config": "realm" });
+  assert.deepEqual(mounts, { "/opt/fbx/script": "admin-permissions-script", "/opt/fbx/tpps": "tpp-clients", "/opt/fbx/registry": "service-clients", "/config": "realm" });
   const vols = Object.fromEntries(pod.volumes.filter((v) => v.configMap).map((v) => [v.name, v.configMap.name]));
   assert.equal(vols["tpp-clients"], "fintechbankx-realm-tpp-clients");
-  // The script ConfigMap carries the onboarding script and its dependency-free rules.
+  assert.equal(vols["service-clients"], "fintechbankx-realm-service-clients");
+  // The script ConfigMap carries the onboarding script and its dependency-free rules and live view.
   const scripts = YAML.parse(read("scripts/realm/kustomization.yaml")).configMapGenerator[0];
   assert.equal(scripts.name, vols["admin-permissions-script"]);
-  assert.deepEqual([...scripts.files].sort(), ["apply-admin-permissions.mjs", "onboard-tpp.mjs", "tpp-rules.mjs"]);
+  assert.deepEqual([...scripts.files].sort(), ["apply-admin-permissions.mjs", "live-view.mjs", "onboard-tpp.mjs", "service-client-rules.mjs", "tpp-rules.mjs"]);
   const realmCm = YAML.parse(read("realm/kustomization.yaml")).configMapGenerator.find((g) => g.name === "fintechbankx-realm-tpp-clients");
   assert.deepEqual(realmCm.files, ["tpp-clients.json"]);
   // The node:alpine image has no node_modules: the Job's scripts import Node built-ins and each other only.
