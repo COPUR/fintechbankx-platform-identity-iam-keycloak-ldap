@@ -159,18 +159,18 @@ test("the customer service may only view and manage members of /customers", () =
 });
 
 // Every registry audience says where it comes from: confirmed by the owning
-// service thread, or derived by the platform pillar. A provenance without its
-// audience is stale.
-const PROVENANCE = /^(confirmed by|derived)/;
+// service thread, or derived by the platform pillar, followed by the source.
+// A provenance without its audience is stale.
+const PROVENANCE = /^(confirmed by|derived) \S/;
 const registryEntries = (registry) => [...registry.clients, ...(registry.channelClients || []), ...(registry.ssoClients || [])];
 
-test("every registry audience has a provenance starting with confirmed by or derived, and no provenance lacks its audience", () => {
+test("every registry audience has a provenance \"confirmed by <source>\" or \"derived <source>\", and no provenance lacks its audience", () => {
   const { registry } = fresh();
   for (const e of registryEntries(registry)) {
     for (const a of e.audiences || []) assert.match(e.audienceProvenance?.[a] ?? "", PROVENANCE, `${e.clientId}: audience ${a}`);
     for (const k of Object.keys(e.audienceProvenance || {})) assert.ok((e.audiences || []).includes(k), `${e.clientId}: audienceProvenance ${k} without its audience`);
   }
-  const want = (id, a) => `${id}: audience ${a} needs an audienceProvenance starting with "confirmed by" or "derived"`;
+  const want = (id, a) => `${id}: audience ${a} needs an audienceProvenance "confirmed by <source>" or "derived <source>"`;
   const entry = (input, id) => registryEntries(input.registry).find((e) => e.clientId === id);
   const missing = fresh();
   delete entry(missing, "svc-ln-loan-lifecycle").audienceProvenance["svc-cus-profile-kyc"];
@@ -181,6 +181,11 @@ test("every registry audience has a provenance starting with confirmed by or der
   const noKey = fresh();
   delete entry(noKey, "of-tpp-conformance-template").audienceProvenance;
   failsWith(noKey, want("of-tpp-conformance-template", "svc-of-atm-directory"));
+  for (const v of ["derivedXYZ", "derived", "derived ", "confirmed by", "confirmed by  ", "confirmedby x", "", 42, { derived: "x" }, ["derived x"]]) {
+    const prefixOnly = fresh();
+    entry(prefixOnly, "svc-ln-loan-lifecycle").audienceProvenance["svc-cus-profile-kyc"] = v;
+    failsWith(prefixOnly, want("svc-ln-loan-lifecycle", "svc-cus-profile-kyc"));
+  }
   const sso = fresh();
   entry(sso, "svc-obs-grafana").audiences = ["svc-cmp-evidence"];
   failsWith(sso, want("svc-obs-grafana", "svc-cmp-evidence"));

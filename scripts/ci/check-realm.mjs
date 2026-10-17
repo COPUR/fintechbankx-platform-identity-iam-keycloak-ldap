@@ -218,11 +218,12 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     for (const a of audiences(c)) if (!knownIds.has(a)) err(`${c.clientId}: audience ${a} is not a client of the realm`);
   }
   // Every registry audience says where it comes from (confirmed by the owning
-  // service thread, or derived); a provenance without its audience is stale.
+  // service thread, or derived), followed by its source; a provenance without
+  // its audience is stale.
   for (const entry of [...registry.clients, ...(registry.channelClients || []), ...(registry.ssoClients || [])]) {
     const prov = entry.audienceProvenance || {};
     for (const a of entry.audiences || []) {
-      if (!/^(confirmed by|derived)/.test(prov[a] ?? "")) err(`${entry.clientId}: audience ${a} needs an audienceProvenance starting with "confirmed by" or "derived"`);
+      if (typeof prov[a] !== "string" || !/^(confirmed by|derived) \S/.test(prov[a])) err(`${entry.clientId}: audience ${a} needs an audienceProvenance "confirmed by <source>" or "derived <source>"`);
     }
     for (const k of Object.keys(prov)) if (!(entry.audiences || []).includes(k)) err(`${entry.clientId}: audienceProvenance ${k} names no registry audience of this client`);
   }
