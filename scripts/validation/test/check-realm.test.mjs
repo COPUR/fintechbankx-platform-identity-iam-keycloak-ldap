@@ -1296,3 +1296,33 @@ test("stock protocol mappers only: script and custom SPI mappers are refused on 
     }
   }
 });
+
+// Known gap (2), closed: standard token exchange (Keycloak 26.7.5 feature
+// token-exchange-standard, on by default) is enabled per client by the
+// attribute standard.token.exchange.enabled, read with Boolean.parseBoolean
+// (any case of "true"). No client of this realm uses it; it is refused on
+// every client, built-in and runtime clients included, in all three modes.
+const TOKEN_EXCHANGE = "standard.token.exchange.enabled";
+const exchangeRefused = (id, v) => `${id}: attribute ${TOKEN_EXCHANGE} is ${JSON.stringify(v)}; standard token exchange is not used in this realm (a client could trade a token it received for a new one with other audiences)`;
+
+test("standard token exchange is refused on every client, in all three modes", async () => {
+  for (const c of fresh().realm.clients) assert.equal(c.attributes?.[TOKEN_EXCHANGE], undefined, c.clientId);
+  for (const v of ["true", "TRUE", "True"]) {
+    for (const id of ["svc-cus-profile-kyc", "svc-ln-loan-lifecycle", "fintechbankx-staff-web", "of-tpp-conformance-template", "svc-obs-grafana"]) {
+      const input = fresh();
+      client(input, id).attributes[TOKEN_EXCHANGE] = v;
+      assert.deepEqual(checkRealm(input), [exchangeRefused(id, v)], `${id} ${v}`);
+    }
+    for (const id of ["svc-ln-loan-lifecycle", "admin-cli", "account", "of-tpp-acme-pay"]) {
+      const live = liveRealm();
+      if (id === "of-tpp-acme-pay") live.clients.push({ ...structuredClone(liveClient(live, "of-tpp-conformance-template")), id: "id-of-tpp-acme-pay", clientId: id });
+      liveClient(live, id).attributes[TOKEN_EXCHANGE] = v;
+      assert.deepEqual(await liveErrors(live), [exchangeRefused(id, v)], `live ${id} ${v}`);
+    }
+  }
+  for (const v of ["false", "FALSE", ""]) {
+    const input = fresh();
+    client(input, "svc-cus-profile-kyc").attributes[TOKEN_EXCHANGE] = v;
+    assert.deepEqual(checkRealm(input), [], v);
+  }
+});

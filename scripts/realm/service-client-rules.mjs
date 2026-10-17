@@ -19,6 +19,7 @@
 // - on any client or client scope, a protocol mapper that is not a stock
 //   Keycloak mapper (STOCK_PROTOCOL_MAPPERS below: script and custom SPI
 //   mappers can write any claim);
+// - on any client, standard token exchange (STANDARD_TOKEN_EXCHANGE below);
 // - on any client or client scope, any mapper whose claim.name, read as a
 //   Keycloak claim path (claimPath below), starts with aud (this realm sets
 //   audiences only through oidc-audience-mapper);
@@ -204,6 +205,21 @@ export function calleeRoleScopes(realm, callee) {
   return out;
 }
 
+// Standard token exchange (Keycloak 26.7.5, feature token-exchange-standard,
+// on by default) is enabled per client by this attribute, read with
+// Boolean.parseBoolean. With it, a client in the aud of a token it received
+// can exchange that token for a new one for the same user, with its own
+// optional scopes: svc-ln-loan-lifecycle turned a customer's
+// fintechbankx-web token into one with aud svc-acc-accounts-ledger (scope
+// aud-svc-acc-accounts-ledger). No client of this realm uses it.
+export const STANDARD_TOKEN_EXCHANGE = "standard.token.exchange.enabled";
+const tokenExchangeErrors = (c) => {
+  const v = c.attributes?.[STANDARD_TOKEN_EXCHANGE];
+  return typeof v === "string" && v.toLowerCase() === "true"
+    ? [`${c.clientId}: attribute ${STANDARD_TOKEN_EXCHANGE} is ${JSON.stringify(v)}; standard token exchange is not used in this realm (a client could trade a token it received for a new one with other audiences)`]
+    : [];
+};
+
 // Keycloak treats a missing fullScopeAllowed as true: every realm role and
 // client role of the user (or service account) would reach the token.
 export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c.clientId}: fullScopeAllowed must be false (Keycloak treats a missing value as true)`]);
@@ -238,6 +254,7 @@ export function serviceClientErrors(realm, registry) {
   // audiences list the callee (compared above). fullScopeAllowed false on
   // every registry client and every client tagged fbx.client-type (runtime
   // TPP clients); Keycloak's built-in clients of a running realm are neither.
+  // No client, built-ins included, enables standard token exchange.
   for (const c of clients.values()) {
     for (const a of scopedAudiences(c, scopedCallees)) err(`${c.clientId}: audience ${a} ${onlyVia(a)}, never through a mapper`);
     if (!serviceIds.has(c.clientId) && !channelIds.has(c.clientId) && audienceScopes(c).length) {
@@ -245,6 +262,7 @@ export function serviceClientErrors(realm, registry) {
     }
     for (const name of c.defaultClientScopes || []) if (AUDIENCE_SCOPE.test(name)) err(`${c.clientId}: audience scope ${name} must be optional, not default`);
     if (registered.has(c.clientId) || c.attributes?.["fbx.client-type"]) for (const m of fullScopeErrors(c)) err(m);
+    for (const m of tokenExchangeErrors(c)) err(m);
   }
 
   // One audience scope per by-scope callee, holding exactly one access-token
