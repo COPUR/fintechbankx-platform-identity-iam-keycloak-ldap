@@ -830,7 +830,7 @@ test("the gate refuses the ledger audience as a mapper, a missing, extra or defa
 const STAFF_WEB = "fintechbankx-staff-web";
 const STAFF_LEDGER_PROVENANCE = "derived (platform pillar, staff-only decision 2026-10-17): staff endpoints of the accounts ledger (GET /api/v1/accounts/{accountId}, account open, freeze, unfreeze and close for banker and admin; GET /api/v1/journal-entries/{journalEntryId} for banker and admin; POST /api/v1/journal-entries for admin), not yet confirmed by the accounts ledger thread";
 const NOT_LEDGER_CHANNELS = ["fintechbankx-web", "fintechbankx-mobile", "of-tpp-conformance-template"];
-const notRegistryScope = (id) => `${id}: optional audience scopes ${LEDGER_SCOPE} are only for the registry clients (service or channel) whose registry audiences list the callee`;
+const notRegistryScope = (id) => `${id}: optional audience scopes ${LEDGER_SCOPE} are only for the registry clients (service, channel or staff SSO) whose registry audiences list the callee`;
 const staffLedgerMapper = () => ({ name: `aud-${LEDGER}`, protocol: "openid-connect", protocolMapper: "oidc-audience-mapper", consentRequired: false,
   config: { "included.client.audience": LEDGER, "access.token.claim": "true", "id.token.claim": "false", "introspection.token.claim": "true", "lightweight.claim": "false" } });
 
@@ -861,7 +861,7 @@ const STAFF_LEDGER_CASES = [
     [`${STAFF_WEB}: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope), never through a mapper`]],
   ...NOT_LEDGER_CHANNELS.map((id) => [`the scope on ${id}`, (clients) => clients(id).optionalClientScopes.push(LEDGER_SCOPE),
     [`${id}: optional audience scopes ${LEDGER_SCOPE} != registry <none>`]]),
-  ["the scope on svc-obs-grafana", (clients) => clients("svc-obs-grafana").optionalClientScopes.push(LEDGER_SCOPE), [notRegistryScope("svc-obs-grafana")]]
+  ["the scope on svc-obs-grafana", (clients) => clients("svc-obs-grafana").optionalClientScopes.push(LEDGER_SCOPE), [`svc-obs-grafana: optional audience scopes ${LEDGER_SCOPE} != registry <none>`]]
 ];
 
 test("staff web: the gate requires the ledger scope there as optional, refuses it as default or as a mapper, and on any other channel or SSO client", () => {
@@ -895,6 +895,35 @@ test("live: staff web holds the ledger scope exactly there, the same through the
     const errors = await liveErrors(live);
     for (const e of expected) assert.ok(errors.includes(e), `${name}: ${e} not in\n${errors.join("\n")}`);
   }
+});
+
+// The staff SSO client (svc-obs-grafana) is a registry client like the
+// service and channel clients: its audience mappers and optional audience
+// scopes are its registry audiences (none today), in all three modes.
+const audMapperFor = (aud) => ({ name: aud, protocol: "openid-connect", protocolMapper: "oidc-audience-mapper", consentRequired: false,
+  config: { "included.client.audience": aud, "access.token.claim": "true", "id.token.claim": "false" } });
+
+test("staff SSO client audiences: mappers and audience scopes equal its registry audiences, in all three modes", async () => {
+  const GRAFANA = "svc-obs-grafana";
+  const mapped = fresh();
+  client(mapped, GRAFANA).protocolMappers.push(audMapperFor("svc-pay-initiation-settlement"));
+  assert.deepEqual(checkRealm(mapped), [`${GRAFANA}: audience mappers svc-pay-initiation-settlement != registry <none>`]);
+  const listed = fresh();
+  const entry = listed.registry.ssoClients.find((c) => c.clientId === GRAFANA);
+  entry.audiences = ["svc-cmp-evidence"];
+  entry.audienceProvenance = { "svc-cmp-evidence": "derived (test)" };
+  assert.deepEqual(checkRealm(listed), [`${GRAFANA}: audience mappers <none> != registry svc-cmp-evidence`]);
+  client(listed, GRAFANA).protocolMappers.push(audMapperFor("svc-cmp-evidence"));
+  assert.deepEqual(checkRealm(listed), []);
+  const missing = fresh();
+  missing.realm.clients = missing.realm.clients.filter((c) => c.clientId !== GRAFANA);
+  assert.deepEqual(checkRealm(missing).filter((e) => e.includes(`${GRAFANA} missing`)), [`staff SSO client ${GRAFANA} missing from realm`]);
+  const live = liveRealm();
+  liveClient(live, GRAFANA).protocolMappers.push(audMapperFor("svc-pay-initiation-settlement"));
+  assert.deepEqual(await liveErrors(live), [`${GRAFANA}: audience mappers svc-pay-initiation-settlement != registry <none>`]);
+  const gone = liveRealm();
+  gone.clients = gone.clients.filter((c) => c.clientId !== GRAFANA);
+  assert.deepEqual(await liveErrors(gone), [`staff SSO client ${GRAFANA} missing from realm`]);
 });
 
 // DevSecOps review (should-fix 1): a by-scope callee's audience reaches a

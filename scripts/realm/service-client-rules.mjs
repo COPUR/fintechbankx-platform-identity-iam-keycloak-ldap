@@ -11,7 +11,7 @@
 //
 // A registry callee with audienceByScope: true is reached only through the
 // optional client scope aud-<callee>, held by exactly the registry clients
-// (service or channel) whose registry audiences list it. These routes to its
+// (service, channel or staff SSO) whose registry audiences list it. These routes to its
 // audience are refused (Keycloak 26.7.5):
 // - an oidc-audience-mapper naming it (client or custom audience) on any
 //   client, or in any client scope but aud-<callee> (realm default scopes
@@ -247,13 +247,15 @@ export function serviceClientErrors(realm, registry) {
   const serviceIds = new Set(registry.clients.map((c) => c.clientId));
   const registered = new Set([...serviceIds, ...(registry.channelClients || []).map((c) => c.clientId), ...(registry.ssoClients || []).map((c) => c.clientId)]);
 
-  // Each service and channel client: its audience mappers and optional
-  // audience scopes are the registry's. A by-scope callee in its registry
-  // audiences becomes the optional scope aud-<callee>, never a mapper.
+  // Each service, channel and staff SSO client: its audience mappers and
+  // optional audience scopes are the registry's. A by-scope callee in its
+  // registry audiences becomes the optional scope aud-<callee>, never a mapper.
   const channelIds = new Set((registry.channelClients || []).map((c) => c.clientId));
-  for (const entry of [...registry.clients, ...(registry.channelClients || [])]) {
+  const ssoIds = new Set((registry.ssoClients || []).map((c) => c.clientId));
+  const kind = (id) => (ssoIds.has(id) ? "staff SSO" : channelIds.has(id) ? "channel" : "service");
+  for (const entry of [...registry.clients, ...(registry.channelClients || []), ...(registry.ssoClients || [])]) {
     const c = clients.get(entry.clientId);
-    if (!c) { err(`${channelIds.has(entry.clientId) ? "channel" : "service"} client ${entry.clientId} missing from realm`); continue; }
+    if (!c) { err(`${kind(entry.clientId)} client ${entry.clientId} missing from realm`); continue; }
     const want = (entry.audiences || []).filter((a) => !scopedCallees.has(a)).sort();
     if (JSON.stringify(audiences(c)) !== JSON.stringify(want)) {
       err(`${c.clientId}: audience mappers ${audiences(c).join(",") || "<none>"} != registry ${want.join(",") || "<none>"}`);
@@ -265,16 +267,16 @@ export function serviceClientErrors(realm, registry) {
   }
 
   // Every client: no mapper for a by-scope callee, audience scopes optional
-  // and only on the registry clients (service or channel) whose registry
-  // audiences list the callee (compared above). fullScopeAllowed false on
+  // and only on the registry clients (service, channel or staff SSO) whose
+  // registry audiences list the callee (compared above). fullScopeAllowed false on
   // every registry client and every client tagged fbx.client-type (runtime
   // TPP clients); Keycloak's built-in clients of a running realm are neither.
   // No client, built-ins included, enables standard token exchange or
   // Authorization Services (but Keycloak's admin-permissions).
   for (const c of clients.values()) {
     for (const a of scopedAudiences(c, scopedCallees)) err(`${c.clientId}: audience ${a} ${onlyVia(a)}, never through a mapper`);
-    if (!serviceIds.has(c.clientId) && !channelIds.has(c.clientId) && audienceScopes(c).length) {
-      err(`${c.clientId}: optional audience scopes ${audienceScopes(c).join(",")} are only for the registry clients (service or channel) whose registry audiences list the callee`);
+    if (!registered.has(c.clientId) && audienceScopes(c).length) {
+      err(`${c.clientId}: optional audience scopes ${audienceScopes(c).join(",")} are only for the registry clients (service, channel or staff SSO) whose registry audiences list the callee`);
     }
     for (const name of c.defaultClientScopes || []) if (AUDIENCE_SCOPE.test(name)) err(`${c.clientId}: audience scope ${name} must be optional, not default`);
     if (registered.has(c.clientId) || c.attributes?.["fbx.client-type"]) for (const m of fullScopeErrors(c)) err(m);

@@ -184,9 +184,11 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
   }
 
   // Staff SSO clients (Grafana): confidential, code + PKCE, roles in userinfo.
+  // A missing one, audience mappers and optional audience scopes:
+  // serviceClientErrors.
   for (const entry of registry.ssoClients || []) {
     const c = clients.get(entry.clientId);
-    if (!c) { err(`staff SSO client ${entry.clientId} missing from realm`); continue; }
+    if (!c) continue;
     if (c.publicClient !== false) err(`${c.clientId}: must be confidential`);
     if (c.standardFlowEnabled !== true) err(`${c.clientId}: authorization code flow must be enabled`);
     for (const f of ["implicitFlowEnabled", "directAccessGrantsEnabled", "serviceAccountsEnabled"]) {
