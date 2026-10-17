@@ -91,12 +91,22 @@ const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/sp
 // @ (on the command line kc.sh builds, and in JDK_JAVA_OPTIONS) as a file of
 // more arguments, which can set -Dkc.db-url or -Dkc.features; no value of
 // these variables may contain @ at all (javaArgfileProblems; this check and
-// the provider check). Not checked: options a JVM option loads from a file
-// (-XX:VMOptionsFile, -XX:Flags).
+// the provider check). The same function refuses the options known to load
+// more options from a file: the JVM's -XX:VMOptionsFile and -XX:Flags, and
+// the -Dsmallrye.config.locations and -Dquarkus.config.locations properties
+// Keycloak's Quarkus configuration reads (a file there can set kc.features or
+// kc.db-url). This is a list of known routes, not proof that no other JVM or
+// Quarkus option reads settings from a file.
 const JAVA_ARGS_ENV = /^(JAVA|JAVA_HOME|JAVA_OPTS.*|JAVA_ADD_OPENS|JAVA_LOCALE|(KC_)?DEBUG(_PORT|_SUSPEND)?|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
-const javaArgfileProblems = (where, e) => (JAVA_ARGS_ENV.test(envForm(e.name)) && String(e.value ?? "").includes("@")
-  ? [`${where} ${e.name} contains "@": the java launcher reads a token starting with @ as a file of more arguments, which this check cannot read`]
-  : []);
+const OPTION_FILE_LOADERS = ["-XX:VMOptionsFile", "-XX:Flags", "-Dsmallrye.config.locations", "-Dquarkus.config.locations"];
+const javaArgfileProblems = (where, e) => {
+  if (!JAVA_ARGS_ENV.test(envForm(e.name))) return [];
+  const value = String(e.value ?? "");
+  return [
+    ...(value.includes("@") ? [`${where} ${e.name} contains "@": the java launcher reads a token starting with @ as a file of more arguments, which this check cannot read`] : []),
+    ...OPTION_FILE_LOADERS.filter((o) => value.toLowerCase().includes(o.toLowerCase())).map((o) => `${where} ${e.name} loads options from a file (${o}), which this check cannot read`)
+  ];
+};
 
 // Env names the Keycloak container may set, matched case-sensitively as Linux
 // does: Keycloak options (KC_*, checked above as database options and config
@@ -322,6 +332,10 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "an @argfile in JAVA_OPTS": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS", value: "-Xms64m @db.args" }]; }, /spec\.env JAVA_OPTS contains "@"/],
     "an @argfile in JAVA_TOOL_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JAVA_TOOL_OPTIONS", value: "@/opt/keycloak/data/db.args" }]; }, /spec\.env JAVA_TOOL_OPTIONS contains "@"/],
     "an @argfile in JAVA_LOCALE (kc.sh appends it to JAVA_OPTS)": [(kc) => { kc.spec.env = [{ name: "JAVA_LOCALE", value: "@/opt/keycloak/data/db.args" }]; }, /spec\.env JAVA_LOCALE contains "@"/],
+    "-XX:VMOptionsFile in JAVA_OPTS_APPEND": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-XX:VMOptionsFile=/opt/keycloak/data/db.opts" }]; }, /spec\.env JAVA_OPTS_APPEND loads options from a file \(-XX:VMOptionsFile\)/],
+    "-XX:Flags in JDK_JAVA_OPTIONS": [(kc) => { pod(kc).containers[0].env = [{ name: "JDK_JAVA_OPTIONS", value: "-XX:Flags=/opt/keycloak/data/db.flags" }]; }, /podTemplate containers\[0\]\.env JDK_JAVA_OPTIONS loads options from a file \(-XX:Flags\)/],
+    "-Dsmallrye.config.locations in JAVA_OPTS": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS", value: "-Dsmallrye.config.locations=/opt/keycloak/data/db.properties" }]; }, /spec\.env JAVA_OPTS loads options from a file \(-Dsmallrye\.config\.locations\)/],
+    "-Dquarkus.config.locations in JAVA_TOOL_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JAVA_TOOL_OPTIONS", value: "-Dquarkus.config.locations=/opt/keycloak/data/db.properties" }]; }, /spec\.env JAVA_TOOL_OPTIONS loads options from a file \(-Dquarkus\.config\.locations\)/],
     // kc.sh never initialises result or CONFIG_ARGS, so their environment
     // values reach the java command line through eval; any name outside the
     // allow-list is refused rather than modelled one by one.
@@ -378,8 +392,9 @@ const overlays = fs.readdirSync(path.join(root, "deploy/kustomize/overlays"));
 // container) takes no args, command or envFrom, because the operator keeps
 // non-empty args (it sets "--verbose start" only when they are empty) and
 // both can set features or fetch a provider jar. The pod template may not
-// replace the image. Not checked here: -XX:VMOptionsFile in a java argument
-// variable, which can load -Dkc.features from a file.
+// replace the image. A java argument variable may not name an option that
+// loads more options from a file (OPTION_FILE_LOADERS); that list holds the
+// known routes only.
 const STOCK_IMAGE = "quay.io/keycloak/keycloak:26.7.5";
 const PROVIDERS_DIR = "/opt/keycloak/providers";
 const ENABLED_FEATURES = /^token-exchange-standard(:v\d+)?$/;
@@ -453,6 +468,9 @@ test("the provider check rejects another image, a refused feature and a mount at
     "an @argfile in pod JDK_JAVA_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JDK_JAVA_OPTIONS", value: "@features.args" }]; }), /podTemplate containers\[0\] env JDK_JAVA_OPTIONS contains "@"/],
     "an @argfile in JAVA_OPTS": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS", value: "@/opt/keycloak/data/features.args" }]; }), /spec env JAVA_OPTS contains "@"/],
     "an @argfile in JAVA_TOOL_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JAVA_TOOL_OPTIONS", value: "@/opt/keycloak/data/features.args" }]; }), /podTemplate containers\[0\] env JAVA_TOOL_OPTIONS contains "@"/],
+    "-XX:VMOptionsFile in JAVA_OPTS_APPEND": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS_APPEND", value: "-XX:VMOptionsFile=/opt/keycloak/data/features.opts" }]; }), /spec env JAVA_OPTS_APPEND loads options from a file \(-XX:VMOptionsFile\)/],
+    "-Dsmallrye.config.locations in pod JDK_JAVA_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JDK_JAVA_OPTIONS", value: "-Dsmallrye.config.locations=/opt/keycloak/data/kc.properties" }]; }), /podTemplate containers\[0\] env JDK_JAVA_OPTIONS loads options from a file \(-Dsmallrye\.config\.locations\)/],
+    "-Dquarkus.config.locations in JAVA_OPTS": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS", value: "-Dquarkus.config.locations=/opt/keycloak/data/kc.properties" }]; }), /spec env JAVA_OPTS loads options from a file \(-Dquarkus\.config\.locations\)/],
     "KCKEY_ env naming features": [withSpec((s) => { s.env = [{ name: "KC_FOO", value: "scripts" }, { name: "KCKEY_FOO", value: "features" }]; }), /spec env KCKEY_FOO maps KC_FOO to features/]
   };
   const missed = [];

@@ -217,7 +217,9 @@ export function calleeRoleScopes(realm, callee) {
 export const STANDARD_TOKEN_EXCHANGE = "standard.token.exchange.enabled";
 const tokenExchangeErrors = (c) => {
   const v = c.attributes?.[STANDARD_TOKEN_EXCHANGE];
-  return typeof v === "string" && v.toLowerCase() === "true"
+  // Keycloak reads the attribute with Boolean.parseBoolean; a JSON boolean
+  // true in the realm file is stored as "true".
+  return v !== undefined && v !== null && String(v).toLowerCase() === "true"
     ? [`${c.clientId}: attribute ${STANDARD_TOKEN_EXCHANGE} is ${JSON.stringify(v)}; standard token exchange is not used in this realm (a client could trade a token it received for a new one with other audiences)`]
     : [];
 };

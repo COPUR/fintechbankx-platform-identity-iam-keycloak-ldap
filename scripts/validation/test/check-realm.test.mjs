@@ -1361,10 +1361,15 @@ test("standard token exchange is refused on every client, in all three modes", a
       assert.deepEqual(await liveErrors(live), [exchangeRefused(id, v)], `live ${id} ${v}`);
     }
   }
-  for (const v of ["false", "FALSE", ""]) {
+  // A JSON boolean in the realm file: Keycloak and keycloak-config-cli store
+  // true as the attribute "true", which Boolean.parseBoolean reads as on.
+  const asBoolean = fresh();
+  client(asBoolean, "svc-cus-profile-kyc").attributes[TOKEN_EXCHANGE] = true;
+  assert.deepEqual(checkRealm(asBoolean), [exchangeRefused("svc-cus-profile-kyc", true)], "JSON true");
+  for (const v of ["false", "FALSE", "", false, " true"]) {
     const input = fresh();
     client(input, "svc-cus-profile-kyc").attributes[TOKEN_EXCHANGE] = v;
-    assert.deepEqual(checkRealm(input), [], v);
+    assert.deepEqual(checkRealm(input), [], JSON.stringify(v));
   }
 });
 
@@ -1396,8 +1401,9 @@ test("Authorization Services (UMA) are refused on every client but Keycloak's ad
       assert.deepEqual(await liveErrors(live), [UMA(id)], `live ${id} ${what}`);
     }
   }
-  // Keycloak and keycloak-config-cli read the JSON string "true" (any case)
-  // as true, so the realm file is refused for any value but false.
+  // Keycloak and keycloak-config-cli read the JSON string "true" as true, so
+  // the realm file is refused for any value but absent, false or "false" (any
+  // case).
   for (const v of ["true", "TRUE", 1]) {
     const input = fresh();
     client(input, LEDGER).authorizationServicesEnabled = v;
