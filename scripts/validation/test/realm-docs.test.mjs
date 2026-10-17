@@ -146,3 +146,24 @@ test("README.md counts every service client of the registry", () => {
   assert.ok(counts.length > 0, "README.md has no \"N service clients\"");
   for (const n of counts) assert.equal(n, registry.clients.length, "README.md service client count");
 });
+
+// Who can obtain staff web's ledger audience: any realm user who can sign in
+// (a customer's staff-web token carries it, with no realm role and no
+// customer_id); staff web's role scope and the ledger's @PreAuthorize gate it.
+test("REALM_AS_CODE.md says any realm user can obtain staff web's ledger audience, and what gates it", () => {
+  const ledger = realmDoc.split("\n").find((l) => l.trim().startsWith("The accounts ledger audience reaches"));
+  assert.ok(ledger, "no ledger audience paragraph");
+  assert.match(ledger, /any realm user[^.]*customers included[^.]*`fintechbankx-staff-web`|any realm user[^.]*`fintechbankx-staff-web`[^.]*customers included/);
+  assert.match(ledger, /role scope[^.]*`@PreAuthorize`/);
+  const gaps = realmDoc.slice(realmDoc.indexOf("Known gap, not checked"));
+  assert.match(gaps.slice(0, gaps.indexOf("\n")), /\(5\)[^.]*any realm user/);
+});
+
+// onboard-tpp.mjs --verify-live always runs the service-client rules; --registry only picks the file.
+test("REALM_AS_CODE.md: --verify-live always runs the service-client rules, with the default registry", () => {
+  const row = realmDoc.split("\n").find((l) => l.startsWith("| `scripts/realm/onboard-tpp.mjs` |"));
+  assert.ok(row, "no onboard-tpp.mjs row");
+  assert.doesNotMatch(row, /and, with `--registry`, the service-client rules/);
+  assert.match(row, /the TPP rules and the service-client rules \(registry from `--registry`, default `realm\/service-clients\.json`/);
+  assert.match(paragraph("Live drift check."), /checked statically only/);
+});
