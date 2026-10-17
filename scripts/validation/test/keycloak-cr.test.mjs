@@ -59,7 +59,9 @@ test("the Keycloak database connection verifies the server certificate", () => {
 // - KC_DB* env vars in spec.env (the operator adds it to the container) or in
 //   the pod template, any spelling; a KCKEY_* env var naming a db option (it
 //   maps another KC_* variable to that option); KC_CONFIG_FILE or option
-//   config-file; kc. system properties in env values (JAVA_OPTS_APPEND);
+//   config-file; kc. system properties in env values (JAVA_OPTS_APPEND); an
+//   @ (argument file) in a variable kc.sh or the JVM turns into java
+//   arguments;
 // - env values it cannot read as written (see JAVA_ARGS_ENV): "$(" anywhere
 //   in the CR, and quotes or backslashes in the variables kc.sh or the JVM
 //   turns into java arguments and in KCKEY_*;
@@ -85,9 +87,16 @@ const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/sp
 // JVM splits JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS and _JAVA_OPTIONS and
 // removes quotes. These variables and KCKEY_* must be literal values without
 // a quote (' or ") or backslash, so the -Dkc. / -Dquarkus. and jdbc: checks
-// read the text Java gets. Not checked: options a JVM argument loads from a
-// file (@argfiles, -XX:VMOptionsFile, -XX:Flags).
+// read the text Java gets. The java launcher reads a token that starts with
+// @ (on the command line kc.sh builds, and in JDK_JAVA_OPTIONS) as a file of
+// more arguments, which can set -Dkc.db-url or -Dkc.features; no value of
+// these variables may contain @ at all (javaArgfileProblems; this check and
+// the provider check). Not checked: options a JVM option loads from a file
+// (-XX:VMOptionsFile, -XX:Flags).
 const JAVA_ARGS_ENV = /^(JAVA|JAVA_HOME|JAVA_OPTS.*|JAVA_ADD_OPENS|JAVA_LOCALE|(KC_)?DEBUG(_PORT|_SUSPEND)?|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
+const javaArgfileProblems = (where, e) => (JAVA_ARGS_ENV.test(envForm(e.name)) && String(e.value ?? "").includes("@")
+  ? [`${where} ${e.name} contains "@": the java launcher reads a token starting with @ as a file of more arguments, which this check cannot read`]
+  : []);
 
 // Env names the Keycloak container may set, matched case-sensitively as Linux
 // does: Keycloak options (KC_*, checked above as database options and config
@@ -191,6 +200,7 @@ function databaseTlsProblems(kc) {
         else if (target === "KC_CONFIG_FILE") problems.push(`${where} ${e.name} maps KC_${env.slice(6)} to ${literal}, another configuration file`);
       }
       if (literal !== undefined && /-D(kc|quarkus)\./i.test(literal)) problems.push(`${where} ${e.name} sets a kc. or quarkus. system property`);
+      problems.push(...javaArgfileProblems(where, e));
     }
   }
   const keycloakContainer = pod?.containers?.[0] || {};
@@ -304,6 +314,14 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "DEBUG_PORT from a Secret": [(kc) => { kc.spec.env = [{ name: "DEBUG_PORT", secret: { name: "x", key: "y" } }]; }, /DEBUG_PORT must be a literal value/],
     "JAVA from a Secret (kc.sh runs it through eval)": [(kc) => { pod(kc).containers[0].env = [{ name: "JAVA", valueFrom: { secretKeyRef: { name: "x", key: "y" } } }]; }, /JAVA must be a literal value/],
     "a quote in a KCKEY_ value": [(kc) => { kc.spec.env = [{ name: "KCKEY_FOO", value: "'db-url'" }]; }, /KCKEY_FOO must be a literal value without quotes or backslashes/],
+    // The java launcher reads a token starting with @ as a file of more
+    // arguments (from the command line kc.sh builds and from
+    // JDK_JAVA_OPTIONS); a mounted file could carry -Dkc.db-url.
+    "an @argfile in JAVA_OPTS_APPEND": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-Xmx1g @/etc/fintechbankx/rds-ca/global-bundle.pem" }]; }, /spec\.env JAVA_OPTS_APPEND contains "@"/],
+    "an @argfile in JDK_JAVA_OPTIONS": [(kc) => { pod(kc).containers[0].env = [{ name: "JDK_JAVA_OPTIONS", value: "@/opt/keycloak/data/db.args" }]; }, /podTemplate containers\[0\]\.env JDK_JAVA_OPTIONS contains "@"/],
+    "an @argfile in JAVA_OPTS": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS", value: "-Xms64m @db.args" }]; }, /spec\.env JAVA_OPTS contains "@"/],
+    "an @argfile in JAVA_TOOL_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JAVA_TOOL_OPTIONS", value: "@/tmp/db.args" }]; }, /spec\.env JAVA_TOOL_OPTIONS contains "@"/],
+    "an @argfile in JAVA_LOCALE (kc.sh appends it to JAVA_OPTS)": [(kc) => { kc.spec.env = [{ name: "JAVA_LOCALE", value: "@/tmp/db.args" }]; }, /spec\.env JAVA_LOCALE contains "@"/],
     // kc.sh never initialises result or CONFIG_ARGS, so their environment
     // values reach the java command line through eval; any name outside the
     // allow-list is refused rather than modelled one by one.
@@ -354,12 +372,14 @@ const overlays = fs.readdirSync(path.join(root, "deploy/kustomize/overlays"));
 // other feature that adds mappers, grants or token exchange), and nothing is
 // mounted at /opt/keycloak/providers. Features are read from spec.features
 // only, so features set as an additional option, a KC_FEATURES* env var, a
-// KCKEY_* env var naming the features option or a -Dkc.features system
-// property are refused; the Keycloak container (the first pod template
+// KCKEY_* env var naming the features option, a -Dkc.features system
+// property or an @ (argument file) in a java argument variable
+// (JAVA_ARGS_ENV) are refused; the Keycloak container (the first pod template
 // container) takes no args, command or envFrom, because the operator keeps
 // non-empty args (it sets "--verbose start" only when they are empty) and
 // both can set features or fetch a provider jar. The pod template may not
-// replace the image.
+// replace the image. Not checked here: -XX:VMOptionsFile in a java argument
+// variable, which can load -Dkc.features from a file.
 const STOCK_IMAGE = "quay.io/keycloak/keycloak:26.7.5";
 const PROVIDERS_DIR = "/opt/keycloak/providers";
 const ENABLED_FEATURES = /^token-exchange-standard(:v\d+)?$/;
@@ -381,6 +401,7 @@ function providerProblems(kc) {
       if (envForm(e.name).startsWith("KC_FEATURES")) problems.push(`${where} env ${e.name} sets features outside spec.features`);
       if (envForm(e.name).startsWith("KCKEY_") && `KC_${envForm(e.value)}`.startsWith("KC_FEATURES")) problems.push(`${where} env ${e.name} maps KC_${envForm(e.name).slice(6)} to ${e.value}, which sets features outside spec.features`);
       if (/-Dkc\.features/i.test(String(e.value ?? ""))) problems.push(`${where} env ${e.name} sets features outside spec.features (-Dkc.features)`);
+      problems.push(...javaArgfileProblems(`${where} env`, e));
     }
     if (c.image !== undefined) problems.push(`${where} image ${c.image} would replace or add to the stock image`);
     for (const m of c.volumeMounts || []) {
@@ -426,6 +447,12 @@ test("the provider check rejects another image, a refused feature and a mount at
     "pod envFrom": [withSpec((s) => { podContainer(s).envFrom = [{ configMapRef: { name: "kc-features" } }]; }), /podTemplate containers\[0\] envFrom/],
     "-Dkc.features in JAVA_OPTS_APPEND": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS_APPEND", value: "-Dkc.features=scripts" }]; }), /spec env JAVA_OPTS_APPEND sets features/],
     "-Dkc.features in pod JAVA_OPTS": [withSpec((s) => { podContainer(s).env = [{ name: "JAVA_OPTS", value: "-Xmx1g -DKC.FEATURES=scripts" }]; }), /podTemplate containers\[0\] env JAVA_OPTS sets features/],
+    // The java launcher reads a token starting with @ as a file of more
+    // arguments; a mounted file could carry -Dkc.features=scripts.
+    "an @argfile in JAVA_OPTS_APPEND": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS_APPEND", value: "-Xmx1g @/opt/keycloak/data/features.args" }]; }), /spec env JAVA_OPTS_APPEND contains "@"/],
+    "an @argfile in pod JDK_JAVA_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JDK_JAVA_OPTIONS", value: "@features.args" }]; }), /podTemplate containers\[0\] env JDK_JAVA_OPTIONS contains "@"/],
+    "an @argfile in JAVA_OPTS": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS", value: "@/tmp/features.args" }]; }), /spec env JAVA_OPTS contains "@"/],
+    "an @argfile in JAVA_TOOL_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JAVA_TOOL_OPTIONS", value: "@/tmp/features.args" }]; }), /podTemplate containers\[0\] env JAVA_TOOL_OPTIONS contains "@"/],
     "KCKEY_ env naming features": [withSpec((s) => { s.env = [{ name: "KC_FOO", value: "scripts" }, { name: "KCKEY_FOO", value: "features" }]; }), /spec env KCKEY_FOO maps KC_FOO to features/]
   };
   const missed = [];
@@ -437,6 +464,8 @@ test("the provider check rejects another image, a refused feature and a mount at
   // Not refused: the allow-listed feature, and a KCKEY_ mapping to another option.
   assert.deepEqual(providerProblems(withSpec((s) => { s.features.enabled = ["token-exchange-standard:v2"]; })), []);
   assert.deepEqual(providerProblems(withSpec((s) => { s.env = [{ name: "KC_FOO", value: "info" }, { name: "KCKEY_FOO", value: "log-level" }]; })), []);
+  // An @ outside the java argument variables is not an argument file.
+  assert.deepEqual(providerProblems(withSpec((s) => { s.env = [{ name: "KC_SPI_EMAIL_FROM", value: "noreply@example.invalid" }]; })), []);
 });
 
 
