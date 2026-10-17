@@ -147,11 +147,13 @@ spec:
         podSelector:
           matchLabels:
             istio: ingressgateway
+      # Namespaces of the service clients in realm/service-clients.json (token
+      # endpoint and JWKS); keycloak-cr.test.mjs keeps the two in step.
       - namespaceSelector:
           matchExpressions:
             - key: kubernetes.io/metadata.name
               operator: In
-              values: [lending, payments, customer, risk, compliance, open-finance]
+              values: [lending, payments, customer, risk, compliance, open-finance, corebanking]
       - podSelector:
           matchLabels:
             app.kubernetes.io/name: keycloak-realm-import

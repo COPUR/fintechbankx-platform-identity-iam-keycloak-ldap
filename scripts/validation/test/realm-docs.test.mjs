@@ -100,3 +100,27 @@ test("the remaining manage-members sign-off card stays open and no security-team
   assert.doesNotMatch(text, /security[- ]team (has )?(signed|approved|accepted)/i);
   assert.doesNotMatch(text, /signed off by/i);
 });
+
+// Counts and lists in REALM_AS_CODE.md follow the client registry
+// (realm/service-clients.json) and the realm import ExternalSecret.
+const registry = JSON.parse(fs.readFileSync(path.join(root, "realm/service-clients.json"), "utf8"));
+
+test("REALM_AS_CODE.md counts and names every service client of the registry", () => {
+  const m = realmDoc.match(/\*\*(\d+) confidential service clients\*\* \(([^)]*)\)/);
+  assert.ok(m, "REALM_AS_CODE.md has no **N confidential service clients** (list) item");
+  assert.equal(Number(m[1]), registry.clients.length, "service client count");
+  const named = [...m[2].matchAll(/`([^`]+)`/g)].map((x) => x[1]);
+  for (const { clientId } of registry.clients) {
+    const covered = named.some((n) => (n.endsWith("*") ? clientId.startsWith(n.slice(0, -1)) : n === clientId));
+    assert.ok(covered, `${clientId} is not named in the service client list`);
+  }
+});
+
+test("REALM_AS_CODE.md counts the client credentials of the realm import ExternalSecret", () => {
+  const es = fs.readFileSync(path.join(root, "deploy/kustomize/base/realm-import/externalsecret.yaml"), "utf8");
+  const credentials = (es.match(/secretKey: FBX_OIDC_SECRET_/g) || []).length;
+  assert.equal(credentials, registry.clients.length + (registry.ssoClients || []).length, "one ExternalSecret entry per service and staff SSO client");
+  const m = realmDoc.match(/ExternalSecret `keycloak-realm-import` \(admin client, LDAP bind, (\d+) client credentials/);
+  assert.ok(m, "REALM_AS_CODE.md does not count the import Job's client credentials");
+  assert.equal(Number(m[1]), credentials);
+});

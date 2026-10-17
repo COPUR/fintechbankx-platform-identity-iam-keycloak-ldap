@@ -172,6 +172,16 @@
       "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
       "audiences": [],
       "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-acc-accounts-ledger",
+      "serviceSlug": "accounts-ledger-service",
+      "namespace": "corebanking",
+      "serviceAccount": "accounts-ledger-service",
+      "displayName": "Accounts Ledger Service",
+      "source": "accounts ledger thread 2026-10-17 (service repository neo-fintechbankx-corebanking-accounts-ledger-service PR #1: service id, chart service account and slug accounts-ledger-service)",
+      "audiences": [],
+      "audienceProvenance": {}
     }
   ],
   "channelClients": [

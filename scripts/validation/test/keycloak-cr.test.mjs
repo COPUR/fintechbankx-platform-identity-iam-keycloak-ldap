@@ -668,3 +668,23 @@ test("KEYCLOAK_ON_EKS.md states the database TLS the CR configures", () => {
   const prerequisites = doc.split("\n").find((l) => l.startsWith("1. Platform prerequisites"));
   assert.ok(prerequisites?.includes(`\`${RDS_CA_CONFIGMAP}\``), "install order step 1 lists the RDS CA bundle ConfigMap the Keycloak pods mount");
 });
+
+// Every service client of the realm registry reaches keycloak:8080 for its
+// token and for the JWKS it validates callers with, so the operator
+// NetworkPolicy must admit its namespace (namespace-wide rules only; the
+// istio-ingress rule admits the gateway pods alone). Accounts ledger
+// (2026-10-17): namespace corebanking.
+test("the Keycloak NetworkPolicy admits the namespace of every registry service client on 8080", () => {
+  const registry = JSON.parse(fs.readFileSync(path.join(root, "realm/service-clients.json"), "utf8"));
+  assert.equal(cr.spec.networkPolicy.enabled, true);
+  const admitted = new Set((cr.spec.networkPolicy.http || [])
+    .filter((rule) => rule.namespaceSelector && !rule.podSelector)
+    .flatMap((rule) => [
+      ...[rule.namespaceSelector.matchLabels?.["kubernetes.io/metadata.name"]].filter(Boolean),
+      ...(rule.namespaceSelector.matchExpressions || [])
+        .filter((e) => e.key === "kubernetes.io/metadata.name" && e.operator === "In")
+        .flatMap((e) => e.values)
+    ]));
+  assert.ok(admitted.has("corebanking"), "namespace corebanking (accounts ledger) cannot reach keycloak:8080");
+  for (const c of registry.clients) assert.ok(admitted.has(c.namespace), `${c.clientId}: namespace ${c.namespace} cannot reach keycloak:8080`);
+});

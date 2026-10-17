@@ -547,3 +547,34 @@ test("live: a client tagged open-finance-tpp without the default client-type sco
   assert.equal(live.errors.length, 1);
   assert.ok(urls.includes("http://kc.test/admin/realms/fintechbankx/clients?first=100&max=100"), urls.join(" "));
 });
+
+// Accounts ledger (accounts ledger thread 2026-10-17; service repository
+// neo-fintechbankx-corebanking-accounts-ledger-service PR #1): service id
+// svc-acc-accounts-ledger in namespace corebanking. The chart's service
+// account and app.kubernetes.io/name are accounts-ledger-service, which is
+// also the Secrets Manager slug (<env>/accounts-ledger-service/...).
+const LEDGER = "svc-acc-accounts-ledger";
+
+test("the accounts ledger has a confidential client-credentials client in namespace corebanking", () => {
+  const input = fresh();
+  const entry = input.registry.clients.find((c) => c.clientId === LEDGER);
+  assert.ok(entry, `registry entry ${LEDGER} missing`);
+  assert.equal(entry.serviceSlug, "accounts-ledger-service");
+  assert.equal(entry.namespace, "corebanking");
+  assert.equal(entry.serviceAccount, "accounts-ledger-service");
+  assert.deepEqual(entry.audiences, [], "the ledger calls no other service yet");
+  assert.deepEqual(entry.audienceProvenance, {});
+  const c = client(input, LEDGER);
+  assert.ok(c, `realm client ${LEDGER} missing`);
+  assert.equal(c.publicClient, false);
+  assert.equal(c.serviceAccountsEnabled, true);
+  for (const f of ["standardFlowEnabled", "implicitFlowEnabled", "directAccessGrantsEnabled"]) assert.equal(c[f], false, f);
+  assert.equal(c.secret, `$(env:${secretEnvName(LEDGER)})`);
+  assert.equal(c.attributes["fbx.client-type"], "service");
+  assert.equal(c.attributes["fbx.service-slug"], "accounts-ledger-service");
+  assert.equal(c.attributes["fbx.namespace"], "corebanking");
+  assert.deepEqual(auds(input, LEDGER), []);
+  assert.deepEqual(scopeRoles(input, LEDGER), ["service"]);
+  assert.deepEqual(input.realm.users.find((u) => u.serviceAccountClientId === LEDGER)?.realmRoles, ["service"]);
+  assert.equal(input.importSecretRefs[secretEnvName(LEDGER)], "ENVIRONMENT/accounts-ledger-service/oidc-client");
+});

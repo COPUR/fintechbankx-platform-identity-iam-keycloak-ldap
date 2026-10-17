@@ -1031,6 +1031,42 @@
       "optionalClientScopes": []
     },
     {
+      "clientId": "svc-acc-accounts-ledger",
+      "name": "Accounts Ledger Service",
+      "description": "Confidential client-credentials client for svc-acc-accounts-ledger (namespace corebanking, service account accounts-ledger-service). Credential delivered via Secrets Manager <env>/accounts-ledger-service/oidc-client.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "$(env:FBX_OIDC_SECRET_SVC_ACC_ACCOUNTS_LEDGER)",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "frontchannelLogout": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "fbx.client-type": "service",
+        "fbx.service-slug": "accounts-ledger-service",
+        "fbx.namespace": "corebanking",
+        "access.token.lifespan": "300",
+        "client_credentials.use_refresh_token": "false",
+        "use.refresh.tokens": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "protocolMappers": [],
+      "defaultClientScopes": [
+        "basic",
+        "roles"
+      ],
+      "optionalClientScopes": []
+    },
+    {
       "clientId": "fintechbankx-web",
       "name": "FinTechBankX web portal (customers)",
       "description": "First-party public client (authorization code + PKCE S256, no client credential). FinTechBankX web portal (customers); customer roles only.",
@@ -1758,6 +1794,12 @@
       ]
     },
     {
+      "client": "svc-acc-accounts-ledger",
+      "roles": [
+        "service"
+      ]
+    },
+    {
       "client": "fintechbankx-web",
       "roles": [
         "customer"
@@ -1953,6 +1995,18 @@
       "username": "service-account-svc-of-atm-directory",
       "enabled": true,
       "serviceAccountClientId": "svc-of-atm-directory",
+      "realmRoles": [
+        "service"
+      ],
+      "clientRoles": {
+        "realm-management": []
+      },
+      "groups": []
+    },
+    {
+      "username": "service-account-svc-acc-accounts-ledger",
+      "enabled": true,
+      "serviceAccountClientId": "svc-acc-accounts-ledger",
       "realmRoles": [
         "service"
       ],
