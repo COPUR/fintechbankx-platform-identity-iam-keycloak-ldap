@@ -8,6 +8,9 @@ on:
       - dev
       - staging
 
+permissions:
+  contents: read
+
 jobs:
   strict-mtls:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
