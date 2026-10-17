@@ -15,8 +15,10 @@
 // - an oidc-audience-mapper naming it (client or custom audience) on any
 //   client, or in any client scope but aud-<callee> (realm default scopes
 //   included);
-// - on any client or client scope, any mapper whose claim.name is aud (this
-//   realm sets audiences only through oidc-audience-mapper), an
+// - on any client or client scope, any mapper whose claim.name, read as a
+//   Keycloak claim path (claimPath below), starts with aud (this realm sets
+//   audiences only through oidc-audience-mapper);
+// - on any client but the callee and on any client scope, an
 //   oidc-hardcoded-role-mapper whose role starts with "<callee>.", and an
 //   oidc-role-name-mapper whose new.role.name starts with "<callee>.";
 // - a client role of the callee in the role scope of another client or of a
@@ -50,14 +52,38 @@ const scopedAudiences = (holder, scopedCallees) => [...new Set((holder.protocolM
 
 const onlyVia = (a) => `is reached only through the optional scope ${audienceScopeName(a)} (registry audienceByScope)`;
 
+// claim.name as Keycloak reads it (JsonUtils.splitClaimPath, 26.7.5): split
+// on dots that no backslash escapes, then a backslash before any character
+// stands for that character. The token's aud is set when the first component
+// is aud, so "aud.", "\aud" and "a\ud" set it too.
+export function claimPath(name) {
+  const out = [];
+  let rest = String(name);
+  const unescape = (s) => s.replace(/\\(.)/g, "$1");
+  for (let m = /^((?:\\.|[^\\.])+?)\./.exec(rest); m; m = /^((?:\\.|[^\\.])+?)\./.exec(rest)) {
+    out.push(unescape(m[1]));
+    rest = rest.slice(m[0].length);
+  }
+  if (rest.length) out.push(unescape(rest));
+  return out;
+}
+
 // Mappers that put a by-scope callee into aud other than oidc-audience-mapper.
-const otherAudienceRoutes = (m, scopedCallees) => {
+// holderClientId: the client that holds the mapper (undefined for a client
+// scope). The audience resolve mapper never puts the token's own client into
+// aud, so a callee role on the callee's own client is no route.
+const otherAudienceRoutes = (m, scopedCallees, holderClientId) => {
   const c = m.config || {};
   const out = [];
-  if (m.protocolMapper !== AUDIENCE_MAPPER && c["claim.name"] === "aud") {
-    out.push(`mapper ${m.name} (${m.protocolMapper}) writes claim aud; this realm sets audiences only through ${AUDIENCE_MAPPER}`);
+  const name = c["claim.name"];
+  const claim = typeof name === "string" ? claimPath(name) : [];
+  if (m.protocolMapper !== AUDIENCE_MAPPER && claim[0] === "aud") {
+    const how = name === "aud" ? "writes claim aud"
+      : `writes ${claim.length === 1 ? "claim" : "under claim"} aud (claim.name ${JSON.stringify(name)}, Keycloak claim path ${JSON.stringify(claim)})`;
+    out.push(`mapper ${m.name} (${m.protocolMapper}) ${how}; this realm sets audiences only through ${AUDIENCE_MAPPER}`);
   }
   for (const callee of scopedCallees) {
+    if (callee === holderClientId) continue;
     const yields = (role) => typeof role === "string" && role.startsWith(`${callee}.`);
     const tail = `a client role of ${callee}, so tokens would carry aud=${callee} (audience resolve); ${callee} ${onlyVia(callee)}`;
     if (m.protocolMapper === HARDCODED_ROLE_MAPPER && yields(c.role)) out.push(`mapper ${m.name} (${m.protocolMapper}) adds role ${c.role}, ${tail}`);
@@ -68,10 +94,19 @@ const otherAudienceRoutes = (m, scopedCallees) => {
 
 // Keycloak's built-in admin clients: created with fullScopeAllowed=true and
 // lightweight access tokens, which carry no aud. Exempt from the role-scope
-// rule only while that attribute is "true".
+// rule only while that attribute is "true" and no audience resolve mapper
+// with lightweight.claim "true" sits on the client or in one of its default or
+// optional client scopes: such a mapper puts aud back into lightweight tokens
+// (Keycloak 26.7.5). Token introspection still returns the full token, aud
+// included, so the exemption holds only for resource servers that validate
+// the JWT locally.
 export const BUILT_IN_ADMIN_CLIENTS = ["admin-cli", "security-admin-console"];
 export const LIGHTWEIGHT_TOKENS = "client.use.lightweight.access.token.enabled";
-const exemptBuiltIn = (c) => BUILT_IN_ADMIN_CLIENTS.includes(c.clientId) && c.attributes?.[LIGHTWEIGHT_TOKENS] === "true";
+export const AUDIENCE_RESOLVE_MAPPER = "oidc-audience-resolve-mapper";
+const lightweightAudienceResolve = (holder) => (holder?.protocolMappers || [])
+  .some((m) => m.protocolMapper === AUDIENCE_RESOLVE_MAPPER && m.config?.["lightweight.claim"] === "true");
+const exemptBuiltIn = (c, scopesByName) => BUILT_IN_ADMIN_CLIENTS.includes(c.clientId) && c.attributes?.[LIGHTWEIGHT_TOKENS] === "true"
+  && ![c, ...[...(c.defaultClientScopes || []), ...(c.optionalClientScopes || [])].map((n) => scopesByName.get(n))].some(lightweightAudienceResolve);
 
 // The client roles of callee in each client's and client scope's role scope,
 // as Keycloak's hasScope decides it (ClientAdapter, ClientScopeAdapter):
@@ -79,7 +114,8 @@ const exemptBuiltIn = (c) => BUILT_IN_ADMIN_CLIENTS.includes(c.clientId) && c.at
 // fullScopeAllowed is not false; otherwise, like a client scope, a callee role
 // when an explicit realm-role or client-role scope mapping, or (for a client)
 // one of its own client roles, is that role or a composite containing it at any
-// depth (roles.realm, roles.client). The exempt built-ins are left out.
+// depth (roles.realm, roles.client). The exempt built-ins (exemptBuiltIn) are
+// left out.
 // Given the effective mappings Keycloak returns (--live), the result is those
 // mappings again.
 export function calleeRoleScopes(realm, callee) {
@@ -114,9 +150,10 @@ export function calleeRoleScopes(realm, callee) {
     .map((m) => m?.[field]).filter((n) => n && !known.has(n)))];
   const clients = realm.clients || [];
   const scopes = realm.clientScopes || [];
+  const scopesByName = new Map(scopes.map((s) => [s.name, s]));
   const out = [];
   for (const c of [...clients, ...named("client", new Set(clients.map((x) => x.clientId))).map((clientId) => ({ clientId, fullScopeAllowed: false }))]) {
-    if (c.clientId === callee || exemptBuiltIn(c)) continue;
+    if (c.clientId === callee || exemptBuiltIn(c, scopesByName)) continue;
     const roles = c.fullScopeAllowed !== false ? [...calleeRoles].sort()
       : inScope([...explicit((m) => m.client === c.clientId), ...(realm.roles?.client?.[c.clientId] || []).map((r) => [c.clientId, r.name])]);
     if (roles.length) out.push({ client: c.clientId, roles });
@@ -201,10 +238,10 @@ export function serviceClientErrors(realm, registry) {
 
   // Other audience routes on every client and client scope (realm default
   // scopes included): a mapper writing claim aud, a hardcoded or renamed
-  // client role of a by-scope callee.
-  for (const [label, holder] of [...[...clients.values()].map((c) => [c.clientId, c]), ...[...scopes.values()].map((s) => [`client scope ${s.name}`, s])]) {
+  // client role of a by-scope callee (except on the callee's own client).
+  for (const [label, holder, holderClientId] of [...[...clients.values()].map((c) => [c.clientId, c, c.clientId]), ...[...scopes.values()].map((s) => [`client scope ${s.name}`, s, undefined])]) {
     for (const m of holder.protocolMappers || []) {
-      for (const r of otherAudienceRoutes(m, scopedCallees)) err(`${label}: ${r}`);
+      for (const r of otherAudienceRoutes(m, scopedCallees, holderClientId)) err(`${label}: ${r}`);
     }
   }
 

@@ -836,24 +836,34 @@ test("by-scope audience: a client mapper with the ledger as custom audience is r
 // hardcoded role or role name mapper yielding a ledger client role, which the
 // audience resolve mapper (built-in scope roles) turns into aud even though the
 // ledger has no such role. Refused on every client and every client scope.
-const audClaimMapper = (type = "oidc-hardcoded-claim-mapper") => ({ name: "aud-claim", protocol: "openid-connect", protocolMapper: type, consentRequired: false,
-  config: { "claim.name": "aud", "claim.value": LEDGER, "user.attribute": "x", "jsonType.label": "String", "access.token.claim": "true" } });
+const audClaimMapper = (type = "oidc-hardcoded-claim-mapper", claimName = "aud") => ({ name: claimName === "aud" ? "aud-claim" : `aud-claim ${claimName}`, protocol: "openid-connect", protocolMapper: type, consentRequired: false,
+  config: { "claim.name": claimName, "claim.value": LEDGER, "user.attribute": "x", "jsonType.label": "String", "access.token.claim": "true" } });
+// Keycloak 26.7.5 reads claim.name as a claim path (JsonUtils.splitClaimPath:
+// unescaped dots split, a backslash escapes the next character) and sets the
+// token's aud when the first component is aud. A client-credentials token of
+// svc-cus-profile-kyc with a hardcoded-claim mapper spelled "aud.", "\aud" or
+// "a\ud" carried aud=svc-acc-accounts-ledger; "Aud", "aud " and "aud\" did
+// not. "aud.x" (a path under aud) did not either, but is refused as well.
+const AUD_SPELLINGS = { "aud.": '["aud"]', "\\aud": '["aud"]', "a\\ud": '["aud"]', "aud.x": '["aud","x"]' };
+const NOT_AUD_SPELLINGS = ["Aud", "aud ", "aud\\", "a\\.ud", "x.aud", "resource_access.aud"];
 const hardcodedRole = (role = `${LEDGER}.anything`) => ({ name: "hardcoded-role", protocol: "openid-connect", protocolMapper: "oidc-hardcoded-role-mapper", consentRequired: false, config: { role } });
 const roleName = (to = `${LEDGER}.service`) => ({ name: "role-name", protocol: "openid-connect", protocolMapper: "oidc-role-name-mapper", consentRequired: false, config: { role: "service", "new.role.name": to } });
 const audRouteErrors = (holder, m) => {
   const via = `${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope)`;
   if (m.protocolMapper === "oidc-hardcoded-role-mapper") return `${holder}: mapper ${m.name} (oidc-hardcoded-role-mapper) adds role ${m.config.role}, a client role of ${LEDGER}, so tokens would carry aud=${LEDGER} (audience resolve); ${via}`;
   if (m.protocolMapper === "oidc-role-name-mapper") return `${holder}: mapper ${m.name} (oidc-role-name-mapper) renames a role to ${m.config["new.role.name"]}, a client role of ${LEDGER}, so tokens would carry aud=${LEDGER} (audience resolve); ${via}`;
-  return `${holder}: mapper ${m.name} (${m.protocolMapper}) writes claim aud; this realm sets audiences only through oidc-audience-mapper`;
+  const n = m.config["claim.name"];
+  const how = n === "aud" ? "writes claim aud" : `writes ${AUD_SPELLINGS[n] === '["aud"]' ? "claim" : "under claim"} aud (claim.name ${JSON.stringify(n)}, Keycloak claim path ${AUD_SPELLINGS[n]})`;
+  return `${holder}: mapper ${m.name} (${m.protocolMapper}) ${how}; this realm sets audiences only through oidc-audience-mapper`;
 };
-const AUD_ROUTES = [audClaimMapper(), audClaimMapper("oidc-usermodel-attribute-mapper"), hardcodedRole(), roleName()];
+const AUD_ROUTES = [audClaimMapper(), audClaimMapper("oidc-usermodel-attribute-mapper"), ...Object.keys(AUD_SPELLINGS).map((n) => audClaimMapper(undefined, n)), hardcodedRole(), roleName()];
 
 test("by-scope audience: an aud claim mapper, a hardcoded ledger role and a role renamed to a ledger role are refused on every client and client scope", () => {
   // The realm file has none of these mappers ("committed realm passes the
   // gate"). Next to each route the holder gets mappers that are no ledger
   // route (a realm role, another client's role, a longer client id), which
   // must not be reported.
-  const harmless = [hardcodedRole("service"), hardcodedRole("svc-cus-profile-kyc.x"), roleName(`${LEDGER}-two.x`)].map((m, i) => ({ ...m, name: `harmless-${i}` }));
+  const harmless = [hardcodedRole("service"), hardcodedRole("svc-cus-profile-kyc.x"), roleName(`${LEDGER}-two.x`), ...NOT_AUD_SPELLINGS.map((n) => audClaimMapper(undefined, n))].map((m, i) => ({ ...m, name: `harmless-${i}` }));
   const holders = [
     ["svc-cus-profile-kyc", (i) => client(i, "svc-cus-profile-kyc")],
     ["svc-ln-loan-lifecycle", (i) => client(i, "svc-ln-loan-lifecycle")],
@@ -868,8 +878,23 @@ test("by-scope audience: an aud claim mapper, a hardcoded ledger role and a role
     for (const m of AUD_ROUTES) {
       const input = fresh();
       holderOf(input).protocolMappers.push(structuredClone(m), ...structuredClone(harmless));
-      assert.deepEqual(checkRealm(input).filter((e) => e.startsWith(`${label}: mapper `)), [audRouteErrors(label, m)], `${label} ${m.protocolMapper}`);
+      assert.deepEqual(checkRealm(input).filter((e) => e.startsWith(`${label}: mapper `)), [audRouteErrors(label, m)], `${label} ${m.protocolMapper} ${m.config["claim.name"] ?? ""}`);
     }
+  }
+  // On the ledger's own client a hardcoded or renamed ledger role is no route:
+  // the audience resolve mapper never puts the token's own client into aud
+  // (Keycloak 26.7.5: the ledger's client-credentials token then had
+  // resource_access.svc-acc-accounts-ledger and no aud). A mapper writing claim
+  // aud is refused there too.
+  for (const m of [hardcodedRole(`${LEDGER}.ledger-reader`), roleName(`${LEDGER}.x`)]) {
+    const input = fresh();
+    client(input, LEDGER).protocolMappers.push(structuredClone(m));
+    assert.deepEqual(checkRealm(input), [], `${LEDGER} itself: ${m.protocolMapper}`);
+  }
+  for (const m of [audClaimMapper(), audClaimMapper(undefined, "aud.")]) {
+    const input = fresh();
+    client(input, LEDGER).protocolMappers.push(structuredClone(m));
+    assert.deepEqual(checkRealm(input), [audRouteErrors(LEDGER, m)], `${LEDGER} itself: claim.name ${m.config["claim.name"]}`);
   }
 });
 
@@ -1006,6 +1031,17 @@ test("live: drift from the service-client rules fails, through the admin API and
     const errors = await liveErrors(live);
     for (const e of expected) assert.ok(errors.includes(e), `${name}: ${e} not in\n${errors.join("\n")}`);
   }
+  // No route: a hardcoded or renamed ledger role on the ledger's own client,
+  // and claim names Keycloak does not read as aud.
+  const noRoute = [
+    ...[hardcodedRole(`${LEDGER}.ledger-reader`), roleName(`${LEDGER}.x`)].map((m) => [`${m.protocolMapper} on ${LEDGER} itself`, (l) => liveClient(l, LEDGER).protocolMappers.push(structuredClone(m))]),
+    ...NOT_AUD_SPELLINGS.map((n) => [`claim.name ${JSON.stringify(n)} on customer-id`, (l) => liveScope(l, "customer-id").protocolMappers.push(audClaimMapper(undefined, n))])
+  ];
+  for (const [name, mutate] of noRoute) {
+    const live = liveRealm();
+    mutate(live);
+    assert.deepEqual(await liveErrors(live), [], name);
+  }
   // A ledger role of its own, mapped nowhere, passes (and is looked up).
   const own = liveRealm();
   own.roles.client[LEDGER] = [{ name: "ledger-reader", composite: false, clientRole: true }];
@@ -1051,6 +1087,7 @@ test("live: ledger client roles in a role scope, the same through the admin API 
   const tail = `, so tokens issued with it would carry aud=${LEDGER} (audience resolve); ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope)`;
   const held = (target) => `${LEDGER}: client roles ledger-reader are in the role scope of ${target}${tail}`;
   const bundle = (name = "ledger-bundle") => ({ name, composite: true, clientRole: false, composites: { client: { [LEDGER]: ["ledger-reader"] } } });
+  const audienceResolve = (config) => ({ name: "x-audience-resolve", protocol: "openid-connect", protocolMapper: "oidc-audience-resolve-mapper", config: { "access.token.claim": "true", "introspection.token.claim": "true", ...config } });
   const consoleMade = (extra) => ({ id: "id-console-made", clientId: "console-made", protocol: "openid-connect", attributes: {}, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [], ...extra });
   const cases = [
     ["ledger role mapped nowhere", () => {}, []],
@@ -1065,6 +1102,22 @@ test("live: ledger client roles in a role scope, the same through the admin API 
     ["built-ins with lightweight access tokens off", (l) => { for (const id of ["admin-cli", "security-admin-console"]) liveClient(l, id).attributes[LIGHTWEIGHT] = "false"; },
       [held("client admin-cli"), held("client security-admin-console")]],
     ["admin-cli without the lightweight attribute", (l) => { delete liveClient(l, "admin-cli").attributes[LIGHTWEIGHT]; }, [held("client admin-cli")]],
+    // A mapper with lightweight.claim "true" reaches lightweight tokens too.
+    // Keycloak 26.7.5, user holding ledger-reader, password grant on
+    // admin-cli: an audience resolve mapper so configured, on admin-cli or in
+    // its default scope roles, gave aud=["svc-acc-accounts-ledger","account"];
+    // the client roles mapper so configured gave resource_access and no aud.
+    ["admin-cli with an audience resolve mapper in lightweight tokens", (l) => liveClient(l, "admin-cli").protocolMappers.push(audienceResolve({ "lightweight.claim": "true" })),
+      [held("client admin-cli")]],
+    ["audience resolve of scope roles in lightweight tokens", (l) => { liveScope(l, "roles").protocolMappers[0].config["lightweight.claim"] = "true"; },
+      [held("client admin-cli"), held("client security-admin-console")]],
+    ["audience resolve in lightweight tokens in an optional scope of admin-cli", (l) => {
+      liveScope(l, "offline_access").protocolMappers.push(audienceResolve({ "lightweight.claim": "true" }));
+      liveClient(l, "admin-cli").optionalClientScopes.push("offline_access");
+    }, [held("client admin-cli")]],
+    ["audience resolve in lightweight tokens in a scope the built-ins do not have", (l) => liveScope(l, "payments").protocolMappers.push(audienceResolve({ "lightweight.claim": "true" })), []],
+    ["audience resolve on admin-cli, not in lightweight tokens", (l) => liveClient(l, "admin-cli").protocolMappers.push(audienceResolve({ "lightweight.claim": "false" })), []],
+    ["client roles mapper in lightweight tokens (resource_access, no aud)", (l) => liveClient(l, "admin-cli").protocolMappers.push({ name: "client roles", protocol: "openid-connect", protocolMapper: "oidc-usermodel-client-role-mapper", config: { "claim.name": "resource_access.${client_id}.roles", multivalued: "true", "access.token.claim": "true", "lightweight.claim": "true" } }), []],
     ["another client named like no built-in, lightweight, fullScopeAllowed", (l) => l.clients.push(consoleMade({ fullScopeAllowed: true, attributes: { [LIGHTWEIGHT]: "true" } })), [held("client console-made")]],
     ["composite realm role mapped into a client's role scope", (l) => { l.roles.realm.push(bundle()); l.scopeMappings.push({ client: "svc-cus-profile-kyc", roles: ["ledger-bundle"] }); },
       [held("client svc-cus-profile-kyc")]],
