@@ -1396,11 +1396,20 @@ test("Authorization Services (UMA) are refused on every client but Keycloak's ad
       assert.deepEqual(await liveErrors(live), [UMA(id)], `live ${id} ${what}`);
     }
   }
+  // Keycloak and keycloak-config-cli read the JSON string "true" (any case)
+  // as true, so the realm file is refused for any value but false.
+  for (const v of ["true", "TRUE", 1]) {
+    const input = fresh();
+    client(input, LEDGER).authorizationServicesEnabled = v;
+    assert.deepEqual(checkRealm(input), [UMA(LEDGER)], JSON.stringify(v));
+  }
   // Keycloak's admin-permissions client (liveRealm) passes; false passes.
   assert.equal(liveClient(liveRealm(), "admin-permissions").authorizationServicesEnabled, true);
-  const off = fresh();
-  client(off, LEDGER).authorizationServicesEnabled = false;
-  assert.deepEqual(checkRealm(off), []);
+  for (const v of [false, "false", "FALSE"]) {
+    const off = fresh();
+    client(off, LEDGER).authorizationServicesEnabled = v;
+    assert.deepEqual(checkRealm(off), [], JSON.stringify(v));
+  }
 });
 
 // Known gap (4), closed: the realm import Job applies the service-client

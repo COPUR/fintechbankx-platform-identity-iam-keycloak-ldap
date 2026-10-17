@@ -229,9 +229,13 @@ const tokenExchangeErrors = (c) => {
 // realm roles of its role scope: svc-cus-profile-kyc got an RPT with aud
 // svc-acc-accounts-ledger and realm role service. No client of this realm
 // uses it. Keycloak's FGAP v2 client admin-permissions (adminPermissionsEnabled)
-// is the resource server of the admin permissions and keeps it.
+// is the resource server of the admin permissions and keeps it. Keycloak and
+// keycloak-config-cli read the JSON string "true" (any case) as true, so any
+// authorizationServicesEnabled but absent, false or "false" (any case) is
+// refused.
 export const FGAP_V2_CLIENT = "admin-permissions";
-const authorizationServicesErrors = (c) => (c.clientId !== FGAP_V2_CLIENT && (c.authorizationServicesEnabled === true || c.authorizationSettings !== undefined)
+const authorizationServicesOff = (v) => v === undefined || v === false || (typeof v === "string" && v.toLowerCase() === "false");
+const authorizationServicesErrors = (c) => (c.clientId !== FGAP_V2_CLIENT && (!authorizationServicesOff(c.authorizationServicesEnabled) || c.authorizationSettings !== undefined)
   ? [`${c.clientId}: Authorization Services are enabled (authorizationServicesEnabled or authorizationSettings); they are not used in this realm (any client could trade its token for an RPT with aud=${c.clientId} through grant type uma-ticket)`]
   : []);
 
