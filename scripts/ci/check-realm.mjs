@@ -426,28 +426,28 @@ export function loadFromRepo(root) {
 //                         .../partial-export?exportClients=true&exportGroupsAndRoles=true):
 //                         an object with clients, clientScopes,
 //                         defaultDefaultClientScopes and
-//                         defaultOptionalClientScopes (scope names), roles,
-//                         and clientScopeMappings (may be absent only when no
-//                         audienceByScope callee has client roles)
+//                         defaultOptionalClientScopes (scope names) and roles;
+//                         scopeMappings and clientScopeMappings count as empty
+//                         when absent (Keycloak's export leaves them out then)
 //   --live                reads the same through the admin API from
 //                         KEYCLOAK_URL with the KEYCLOAK_* credential
 //                         variables of apply-admin-permissions.mjs
 //   --realm <name>        realm for --live (default fintechbankx)
 //   --root <repo-root>    where realm/service-clients.json is read
 const EXPORT_KEYS = ["clients", "clientScopes", "defaultDefaultClientScopes", "defaultOptionalClientScopes"];
-export function liveExportView(json, registry) {
+export function liveExportView(json) {
   if (Array.isArray(json)) throw new Error("--live-export: a GET /clients array covers the TPP rules only; export the realm with partial-export?exportClients=true&exportGroupsAndRoles=true");
   for (const k of EXPORT_KEYS) if (!Array.isArray(json?.[k])) throw new Error(`--live-export: the export lacks ${k} (partial-export?exportClients=true&exportGroupsAndRoles=true)`);
   if (!json.roles || typeof json.roles !== "object") throw new Error("--live-export: the export lacks roles (partial-export with exportGroupsAndRoles=true)");
-  const withRoles = [...scopedCalleesOf(registry)].filter((id) => (json.roles.client?.[id] || []).length);
-  if (withRoles.length && !json.clientScopeMappings) throw new Error(`--live-export: the export lacks clientScopeMappings, needed because ${withRoles.join(", ")} has client roles`);
-  return { ...Object.fromEntries(EXPORT_KEYS.map((k) => [k, json[k]])), roles: json.roles, clientScopeMappings: json.clientScopeMappings || {} };
+  return { ...Object.fromEntries(EXPORT_KEYS.map((k) => [k, json[k]])), roles: json.roles, scopeMappings: json.scopeMappings || [], clientScopeMappings: json.clientScopeMappings || {} };
 }
 
 // The same view from the admin API (view-clients and view-realm). Client-role
 // scope mappings are read only for a by-scope callee that has client roles:
 // the roles of that callee in each client's and client scope's effective role
-// scope (composites expanded; for a client with fullScopeAllowed, all of them).
+// scope, as Keycloak's hasScope gives them (fullScopeAllowed, composites and a
+// client's own roles applied). calleeRoleScopes returns these unchanged, so
+// both modes apply one model.
 export async function fetchLiveView({ fetch = globalThis.fetch, baseUrl, token, realm, registry }) {
   const base = `${String(baseUrl).replace(/\/+$/, "")}/admin/realms/${encodeURIComponent(realm)}`;
   const get = async (p) => {
@@ -465,6 +465,7 @@ export async function fetchLiveView({ fetch = globalThis.fetch, baseUrl, token, 
     defaultDefaultClientScopes: names(await get("/default-default-client-scopes")),
     defaultOptionalClientScopes: names(await get("/default-optional-client-scopes")),
     roles: { client: {} },
+    scopeMappings: [],
     clientScopeMappings: {}
   };
   for (const callee of scopedCalleesOf(registry)) {
@@ -495,7 +496,7 @@ export async function checkLive({ argv = process.argv, env = process.env, fetch 
   const registry = JSON.parse(fs.readFileSync(path.join(root, "realm/service-clients.json"), "utf8"));
   let view;
   if (arg("--live-export")) {
-    view = liveExportView(JSON.parse(fs.readFileSync(arg("--live-export"), "utf8")), registry);
+    view = liveExportView(JSON.parse(fs.readFileSync(arg("--live-export"), "utf8")));
   } else {
     const token = await fetchAdminToken({ fetch, env });
     view = await fetchLiveView({ fetch, baseUrl: env.KEYCLOAK_URL, token, realm: arg("--realm") || "fintechbankx", registry });

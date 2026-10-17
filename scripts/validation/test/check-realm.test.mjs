@@ -509,13 +509,15 @@ test("DCR: registration policies are declared; anonymous closed, TPP scopes and 
 // A running realm as the admin API returns it (and as a partial export holds
 // it): the realm file's clients and client scopes with ids, plus Keycloak's
 // built-in clients and scopes. The built-in clients are neither in the
-// registry nor tagged fbx.client-type, so their fullScopeAllowed (true for
-// some of them here) is not checked.
+// registry nor tagged fbx.client-type, so fullScopeErrors does not apply to
+// them. admin-cli and security-admin-console are created by Keycloak 26.7.5
+// with fullScopeAllowed=true and lightweight access tokens (no aud).
 const LIVE_ENV = { KEYCLOAK_URL: "http://kc.test", KEYCLOAK_CLIENTID: "x", KEYCLOAK_CLIENTSECRET: "y" };
+const LIGHTWEIGHT = "client.use.lightweight.access.token.enabled";
 function liveRealm() {
   const { realm } = fresh();
   const builtIn = [["account", false], ["account-console", false], ["admin-cli", true], ["broker", false], ["realm-management", false], ["security-admin-console", true]]
-    .map(([clientId, fullScopeAllowed]) => ({ clientId, fullScopeAllowed, attributes: {}, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [] }));
+    .map(([clientId, fullScopeAllowed]) => ({ clientId, fullScopeAllowed, attributes: fullScopeAllowed ? { [LIGHTWEIGHT]: "true" } : {}, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [] }));
   const builtInScopes = [
     { name: "basic", protocol: "openid-connect", attributes: {}, protocolMappers: [] },
     { name: "roles", protocol: "openid-connect", attributes: {}, protocolMappers: [{ name: "audience resolve", protocol: "openid-connect", protocolMapper: "oidc-audience-resolve-mapper", config: {} }] },
@@ -528,12 +530,41 @@ function liveRealm() {
     defaultDefaultClientScopes: [...realm.defaultDefaultClientScopes],
     defaultOptionalClientScopes: ["offline_access"],
     roles: { realm: structuredClone(realm.roles.realm), client: {} },
+    scopeMappings: structuredClone(realm.scopeMappings),
     clientScopeMappings: {}
   };
 }
+// What Keycloak's hasScope gives for a callee's client roles (ClientAdapter
+// and ClientScopeAdapter, 26.7.5): a client with fullScopeAllowed (absent
+// counts as true) has all of them; otherwise a role is in scope when an
+// explicit realm-role or client-role scope mapping, or (for a client) one of
+// its own client roles, is that role or a composite containing it, at any
+// depth.
+function keycloakScope(live, holder, callee) {
+  const calleeRoles = (live.roles.client[callee] || []).map((r) => r.name);
+  if (holder.clientId !== undefined && holder.fullScopeAllowed !== false) return calleeRoles;
+  const matches = (m) => (holder.clientId !== undefined ? m.client === holder.clientId : m.clientScope === holder.name);
+  const todo = [
+    ...(live.scopeMappings || []).filter(matches).flatMap((m) => m.roles.map((n) => [null, n])),
+    ...Object.entries(live.clientScopeMappings || {}).flatMap(([owner, ms]) => ms.filter(matches).flatMap((m) => m.roles.map((n) => [owner, n]))),
+    ...(holder.clientId !== undefined ? (live.roles.client[holder.clientId] || []).map((r) => [holder.clientId, r.name]) : [])
+  ];
+  const seen = new Set();
+  while (todo.length) {
+    const [owner, name] = todo.pop();
+    const key = JSON.stringify([owner, name]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const def = (owner === null ? live.roles.realm : live.roles.client[owner] || []).find((r) => r.name === name);
+    for (const n of def?.composites?.realm || []) todo.push([null, n]);
+    for (const [id, ns] of Object.entries(def?.composites?.client || {})) for (const n of ns) todo.push([id, n]);
+  }
+  return calleeRoles.filter((n) => seen.has(JSON.stringify([callee, n])));
+}
 // The admin API of that realm: token, paged clients, client scopes, realm
 // default scopes, a client's roles, and the effective (composite) client-role
-// scope mappings of a client or client scope.
+// scope mappings of a client or client scope, answered as Keycloak does
+// (keycloakScope), not from the explicit mappings alone.
 function adminApi(live) {
   const urls = [];
   const json = (body) => new Response(JSON.stringify(body), { status: 200 });
@@ -554,12 +585,8 @@ function adminApi(live) {
     if (m) return json(live.roles.client[byId(live.clients, m[1]).clientId] || []);
     m = p.match(/^\/(clients|client-scopes)\/([^/]+)\/scope-mappings\/clients\/([^/]+)\/composite$/);
     if (m) {
-      const holder = m[1] === "clients" ? { client: byId(live.clients, m[2]).clientId } : { clientScope: byId(live.clientScopes, m[2]).name };
-      const callee = byId(live.clients, m[3]).clientId;
-      const roles = (live.clientScopeMappings[callee] || [])
-        .filter((x) => (holder.client ? x.client === holder.client : x.clientScope === holder.clientScope))
-        .flatMap((x) => x.roles);
-      return json(roles.map((name) => ({ name })));
+      const holder = byId(m[1] === "clients" ? live.clients : live.clientScopes, m[2]);
+      return json(keycloakScope(live, holder, byId(live.clients, m[3]).clientId).map((name) => ({ name })));
     }
     return new Response("not found", { status: 404 });
   };
@@ -803,6 +830,49 @@ test("by-scope audience: a client mapper with the ledger as custom audience is r
   failsWith(input, `svc-cus-profile-kyc: audience mappers custom:${LEDGER} != registry <none>`);
 });
 
+// Review finding (other audience routes): besides oidc-audience-mapper, three
+// mapper kinds put the ledger into aud on Keycloak 26.7.5: any mapper writing
+// claim aud (OIDCAttributeMapperHelper sets the real audience), and a
+// hardcoded role or role name mapper yielding a ledger client role, which the
+// audience resolve mapper (built-in scope roles) turns into aud even though the
+// ledger has no such role. Refused on every client and every client scope.
+const audClaimMapper = (type = "oidc-hardcoded-claim-mapper") => ({ name: "aud-claim", protocol: "openid-connect", protocolMapper: type, consentRequired: false,
+  config: { "claim.name": "aud", "claim.value": LEDGER, "user.attribute": "x", "jsonType.label": "String", "access.token.claim": "true" } });
+const hardcodedRole = (role = `${LEDGER}.anything`) => ({ name: "hardcoded-role", protocol: "openid-connect", protocolMapper: "oidc-hardcoded-role-mapper", consentRequired: false, config: { role } });
+const roleName = (to = `${LEDGER}.service`) => ({ name: "role-name", protocol: "openid-connect", protocolMapper: "oidc-role-name-mapper", consentRequired: false, config: { role: "service", "new.role.name": to } });
+const audRouteErrors = (holder, m) => {
+  const via = `${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope)`;
+  if (m.protocolMapper === "oidc-hardcoded-role-mapper") return `${holder}: mapper ${m.name} (oidc-hardcoded-role-mapper) adds role ${m.config.role}, a client role of ${LEDGER}, so tokens would carry aud=${LEDGER} (audience resolve); ${via}`;
+  if (m.protocolMapper === "oidc-role-name-mapper") return `${holder}: mapper ${m.name} (oidc-role-name-mapper) renames a role to ${m.config["new.role.name"]}, a client role of ${LEDGER}, so tokens would carry aud=${LEDGER} (audience resolve); ${via}`;
+  return `${holder}: mapper ${m.name} (${m.protocolMapper}) writes claim aud; this realm sets audiences only through oidc-audience-mapper`;
+};
+const AUD_ROUTES = [audClaimMapper(), audClaimMapper("oidc-usermodel-attribute-mapper"), hardcodedRole(), roleName()];
+
+test("by-scope audience: an aud claim mapper, a hardcoded ledger role and a role renamed to a ledger role are refused on every client and client scope", () => {
+  // The realm file has none of these mappers ("committed realm passes the
+  // gate"). Next to each route the holder gets mappers that are no ledger
+  // route (a realm role, another client's role, a longer client id), which
+  // must not be reported.
+  const harmless = [hardcodedRole("service"), hardcodedRole("svc-cus-profile-kyc.x"), roleName(`${LEDGER}-two.x`)].map((m, i) => ({ ...m, name: `harmless-${i}` }));
+  const holders = [
+    ["svc-cus-profile-kyc", (i) => client(i, "svc-cus-profile-kyc")],
+    ["svc-ln-loan-lifecycle", (i) => client(i, "svc-ln-loan-lifecycle")],
+    ["fintechbankx-staff-web", (i) => client(i, "fintechbankx-staff-web")],
+    ["of-tpp-conformance-template", (i) => client(i, "of-tpp-conformance-template")],
+    ["console-made", (i) => { const c = { clientId: "console-made", protocol: "openid-connect", fullScopeAllowed: false, attributes: {}, protocolMappers: [] }; i.realm.clients.push(c); return c; }],
+    ["client scope customer-id", (i) => scope(i, "customer-id")],
+    ["client scope payments", (i) => scope(i, "payments")],
+    ["client scope ledger-everywhere", (i) => { const s = { name: "ledger-everywhere", protocol: "openid-connect", attributes: {}, protocolMappers: [] }; i.realm.clientScopes.push(s); i.realm.defaultOptionalClientScopes = ["ledger-everywhere"]; return s; }]
+  ];
+  for (const [label, holderOf] of holders) {
+    for (const m of AUD_ROUTES) {
+      const input = fresh();
+      holderOf(input).protocolMappers.push(structuredClone(m), ...structuredClone(harmless));
+      assert.deepEqual(checkRealm(input).filter((e) => e.startsWith(`${label}: mapper `)), [audRouteErrors(label, m)], `${label} ${m.protocolMapper}`);
+    }
+  }
+});
+
 test("by-scope audience: ledger client roles may exist, but none may sit in another client's or scope's role scope (audience resolve)", () => {
   const base = fresh();
   // Read from the realm: the ledger has no client roles today and no client
@@ -821,9 +891,22 @@ test("by-scope audience: ledger client roles may exist, but none may sit in anot
   toScope.realm.clientScopeMappings = { [LEDGER]: [{ clientScope: "roles", roles: ["ledger-reader"] }] };
   failsWith(toScope, `${LEDGER}: client roles ledger-reader are in the role scope of client scope roles${tail}`);
 
+  // A composite role counts where it is in a role scope: realm role service
+  // is scope-mapped to every service client.
   const composite = structuredClone(base);
   Object.assign(composite.realm.roles.realm.find((r) => r.name === "service"), { composite: true, composites: { client: { [LEDGER]: ["ledger-reader"] } } });
-  failsWith(composite, `role service: composite of ${LEDGER} client roles ledger-reader${tail}`);
+  failsWith(composite, `${LEDGER}: client roles ledger-reader are in the role scope of client svc-cus-profile-kyc${tail}`);
+  failsWith(composite, `${LEDGER}: client roles ledger-reader are in the role scope of client svc-ln-loan-lifecycle${tail}`);
+  // A composite role in no client's or scope's role scope is not a route
+  // (the extra realm role only breaks the contract role set).
+  const unmapped = structuredClone(base);
+  unmapped.realm.roles.realm.push({ name: "ledger-bundle", composite: true, clientRole: false, composites: { client: { [LEDGER]: ["ledger-reader"] } } });
+  assert.deepEqual(checkRealm(unmapped).filter((e) => e.includes(LEDGER)), [], checkRealm(unmapped).join("\n"));
+  // A client with fullScopeAllowed absent (Keycloak reads true) holds every
+  // ledger role, whether or not it is registered or tagged.
+  const fullScope = structuredClone(base);
+  fullScope.realm.clients.push({ clientId: "console-made", protocol: "openid-connect", attributes: {}, protocolMappers: [] });
+  failsWith(fullScope, `${LEDGER}: client roles ledger-reader are in the role scope of client console-made${tail}`);
 });
 
 // DevSecOps review (should-fix 2): fullScopeAllowed is false on every client
@@ -907,7 +990,15 @@ test("live: drift from the service-client rules fails, through the admin API and
     ["ledger client role scope-mapped to a client scope", (l) => ledgerRole(l, { clientScope: "roles", roles: ["ledger-reader"] }),
       [`${LEDGER}: client roles ledger-reader are in the role scope of client scope roles${tail}`]],
     ["service client missing", (l) => { l.clients = l.clients.filter((c) => c.clientId !== LEDGER); },
-      [`service client ${LEDGER} missing from realm`]]
+      [`service client ${LEDGER} missing from realm`]],
+    // Other audience routes, on a client, a realm default scope and a
+    // built-in scope of the running realm.
+    ...AUD_ROUTES.flatMap((m) => [
+      [`${m.name} (${m.protocolMapper}) on a client`, (l) => liveClient(l, "svc-cus-profile-kyc").protocolMappers.push(structuredClone(m)), [audRouteErrors("svc-cus-profile-kyc", m)]],
+      [`${m.name} (${m.protocolMapper}) on customer-id`, (l) => liveScope(l, "customer-id").protocolMappers.push(structuredClone(m)), [audRouteErrors("client scope customer-id", m)]],
+      [`${m.name} (${m.protocolMapper}) on roles`, (l) => liveScope(l, "roles").protocolMappers.push(structuredClone(m)), [audRouteErrors("client scope roles", m)]],
+      [`${m.name} (${m.protocolMapper}) on admin-cli`, (l) => liveClient(l, "admin-cli").protocolMappers.push(structuredClone(m)), [audRouteErrors("admin-cli", m)]]
+    ])
   ];
   for (const [name, mutate, expected] of cases) {
     const live = liveRealm();
@@ -934,10 +1025,66 @@ test("live: --live-export needs a partial export with clients, client scopes, re
     delete partial[key];
     await assert.rejects(liveFromFile(partial), new RegExp(`--live-export: the export lacks ${key}`), key);
   }
-  // clientScopeMappings may be absent only while the ledger has no client roles.
+  // Keycloak's export leaves out clientScopeMappings and scopeMappings when
+  // they are empty (ExportUtils); a realm deployed from this realm file has no
+  // client-role scope mapping at all. Absent counts as empty, also once the
+  // ledger has client roles.
   const noMappings = liveRealm();
   delete noMappings.clientScopeMappings;
+  delete noMappings.scopeMappings;
   assert.deepEqual((await liveFromFile(noMappings)).errors, []);
   noMappings.roles.client[LEDGER] = [{ name: "ledger-reader", composite: false, clientRole: true }];
-  await assert.rejects(liveFromFile(noMappings), new RegExp(`--live-export: the export lacks clientScopeMappings, needed because ${LEDGER} has client roles`));
+  assert.deepEqual((await liveFromFile(noMappings)).errors, []);
+  assert.match(runLiveExport(noMappings), /realm-check --live: OK/);
+});
+
+// Review finding (one model for both modes): a client X other than the
+// ledger holds a ledger client role in its role scope when fullScopeAllowed is
+// not false, when its explicit client-role scope mappings name it, or when an
+// explicit realm-role or client-role scope mapping, or one of X's own client
+// roles, is a composite containing it at any depth (Keycloak's hasScope). A
+// client scope holds one through its own scope mappings. admin-cli and
+// security-admin-console are exempt only while their access tokens are
+// lightweight (no aud). --live asks Keycloak (/composite); --live-export
+// computes the same from the export.
+test("live: ledger client roles in a role scope, the same through the admin API and a partial export", async () => {
+  const tail = `, so tokens issued with it would carry aud=${LEDGER} (audience resolve); ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope)`;
+  const held = (target) => `${LEDGER}: client roles ledger-reader are in the role scope of ${target}${tail}`;
+  const bundle = (name = "ledger-bundle") => ({ name, composite: true, clientRole: false, composites: { client: { [LEDGER]: ["ledger-reader"] } } });
+  const consoleMade = (extra) => ({ id: "id-console-made", clientId: "console-made", protocol: "openid-connect", attributes: {}, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [], ...extra });
+  const cases = [
+    ["ledger role mapped nowhere", () => {}, []],
+    ["ledger role mapped to a client that does not call the ledger", (l) => { l.clientScopeMappings[LEDGER] = [{ client: "svc-cus-profile-kyc", roles: ["ledger-reader"] }]; },
+      [held("client svc-cus-profile-kyc")]],
+    ["ledger role mapped to a caller", (l) => { l.clientScopeMappings[LEDGER] = [{ client: "svc-ln-loan-lifecycle", roles: ["ledger-reader"] }]; },
+      [held("client svc-ln-loan-lifecycle")]],
+    ["untagged client with fullScopeAllowed true", (l) => l.clients.push(consoleMade({ fullScopeAllowed: true })), [held("client console-made")]],
+    ["untagged client without fullScopeAllowed", (l) => l.clients.push(consoleMade({})), [held("client console-made")]],
+    ["untagged client with fullScopeAllowed false", (l) => l.clients.push(consoleMade({ fullScopeAllowed: false })), []],
+    ["built-ins with lightweight access tokens", (l) => { liveClient(l, "admin-cli").attributes[LIGHTWEIGHT] = "true"; }, []],
+    ["built-ins with lightweight access tokens off", (l) => { for (const id of ["admin-cli", "security-admin-console"]) liveClient(l, id).attributes[LIGHTWEIGHT] = "false"; },
+      [held("client admin-cli"), held("client security-admin-console")]],
+    ["admin-cli without the lightweight attribute", (l) => { delete liveClient(l, "admin-cli").attributes[LIGHTWEIGHT]; }, [held("client admin-cli")]],
+    ["another client named like no built-in, lightweight, fullScopeAllowed", (l) => l.clients.push(consoleMade({ fullScopeAllowed: true, attributes: { [LIGHTWEIGHT]: "true" } })), [held("client console-made")]],
+    ["composite realm role mapped into a client's role scope", (l) => { l.roles.realm.push(bundle()); l.scopeMappings.push({ client: "svc-cus-profile-kyc", roles: ["ledger-bundle"] }); },
+      [held("client svc-cus-profile-kyc")]],
+    ["composite realm role, two levels deep, mapped into a client's role scope", (l) => {
+      l.roles.realm.push(bundle(), { name: "outer", composite: true, clientRole: false, composites: { realm: ["ledger-bundle"] } });
+      l.scopeMappings.find((m) => m.client === "svc-cus-profile-kyc").roles.push("outer");
+    }, [held("client svc-cus-profile-kyc")]],
+    ["composite client role of another client mapped into a client's role scope", (l) => {
+      l.roles.client["svc-cmp-evidence"] = [{ ...bundle("evidence-bundle"), clientRole: true }];
+      l.clientScopeMappings["svc-cmp-evidence"] = [{ client: "svc-cus-profile-kyc", roles: ["evidence-bundle"] }];
+    }, [held("client svc-cus-profile-kyc"), held("client svc-cmp-evidence")]],
+    ["composite role in no role scope", (l) => { l.roles.realm.push(bundle()); }, []],
+    ["client scope with a ledger role", (l) => { l.clientScopeMappings[LEDGER] = [{ clientScope: "payments", roles: ["ledger-reader"] }]; }, [held("client scope payments")]],
+    ["client scope with a composite holding a ledger role", (l) => { l.roles.realm.push(bundle()); l.scopeMappings.push({ clientScope: "customer-id", roles: ["ledger-bundle"] }); },
+      [held("client scope customer-id")]]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const live = liveRealm();
+    live.roles.client[LEDGER] = [{ name: "ledger-reader", composite: false, clientRole: true }];
+    mutate(live);
+    assert.deepEqual(await liveErrors(live), expected, name);
+  }
 });
