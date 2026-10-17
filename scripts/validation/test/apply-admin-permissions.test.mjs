@@ -128,7 +128,7 @@ test("admin token: client credentials against the login realm, password grant wh
   const g = fakeFetch({ [`POST ${BASE}/realms/other/protocol/openid-connect/token`]: [200, { access_token: "def" }] });
   const calls = [];
   const spy = async (url, init) => { calls.push(String(init.body)); return g.fetch(url, init); };
-  await fetchAdminToken({ fetch: spy, env: { KEYCLOAK_URL: BASE, KEYCLOAK_LOGINREALM: "other", KEYCLOAK_GRANTTYPE: "password", KEYCLOAK_USER: "u", KEYCLOAK_PASSWORD: "p" } });
+  await fetchAdminToken({ fetch: spy, env: { KEYCLOAK_URL: BASE, KEYCLOAK_LOGINREALM: "other", KEYCLOAK_GRANTTYPE: "password", KEYCLOAK_USER: "u", KEYCLOAK_PASSWORD: "<admin-password>" } });
   assert.match(calls[0], /grant_type=password/);
   assert.match(calls[0], /client_id=admin-cli/);
   await assert.rejects(fetchAdminToken({ fetch: spy, env: { KEYCLOAK_URL: BASE } }), /KEYCLOAK_CLIENTID/);
