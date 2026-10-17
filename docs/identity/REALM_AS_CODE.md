@@ -152,6 +152,18 @@ With both in place, an upgrade from the previous realm removed `manage-users` fr
 
 KeycloakRealmImport (operator CR) is not used: it only creates a missing realm and never updates an existing one.
 
+**Rollout order for the ledger audience scope (Platform decision 2026-10-17).** In each environment:
+1. Import the realm that carries `aud-svc-acc-accounts-ledger`.
+2. Deploy the four callers (`payment-initiation-settlement`, `payment-recurring-mandates`, `payment-bulk-orchestration`, `loan-lifecycle`) together, in the same change window, with their ledger client registration requesting that scope.
+
+Between the two steps, ledger calls fail closed. A caller still on its old version gets a token without the ledger audience, and the ledger answers 401. A caller deployed before the import asks for a scope the realm does not have, and the token endpoint answers `invalid_scope`.
+
+There is no transitional realm carrying both the old always-on mapper and the new scope. It would put the ledger audience back into every token these callers send for the whole transition, and `check-realm.mjs` refuses that configuration.
+
+No environment runs the ledger yet, so the first rollout has no gap.
+
+**Rollback.** Rolling the callers back to a version that does not request the scope also means importing the previous realm, the one with the always-on mapper.
+
 ## Local evidence (2026-10-08)
 
 Run against a local Keycloak 26.7.5 (same version as the CR) and OpenLDAP loaded with `deploy/kustomize/components/openldap/seed/50-fintechbankx-structure.ldif` plus one synthetic test user, using the keycloak-config-cli 6.5.1 jar extracted from the pinned image:
