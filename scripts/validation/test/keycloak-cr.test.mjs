@@ -320,8 +320,8 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "an @argfile in JAVA_OPTS_APPEND": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-Xmx1g @/etc/fintechbankx/rds-ca/global-bundle.pem" }]; }, /spec\.env JAVA_OPTS_APPEND contains "@"/],
     "an @argfile in JDK_JAVA_OPTIONS": [(kc) => { pod(kc).containers[0].env = [{ name: "JDK_JAVA_OPTIONS", value: "@/opt/keycloak/data/db.args" }]; }, /podTemplate containers\[0\]\.env JDK_JAVA_OPTIONS contains "@"/],
     "an @argfile in JAVA_OPTS": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS", value: "-Xms64m @db.args" }]; }, /spec\.env JAVA_OPTS contains "@"/],
-    "an @argfile in JAVA_TOOL_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JAVA_TOOL_OPTIONS", value: "@/tmp/db.args" }]; }, /spec\.env JAVA_TOOL_OPTIONS contains "@"/],
-    "an @argfile in JAVA_LOCALE (kc.sh appends it to JAVA_OPTS)": [(kc) => { kc.spec.env = [{ name: "JAVA_LOCALE", value: "@/tmp/db.args" }]; }, /spec\.env JAVA_LOCALE contains "@"/],
+    "an @argfile in JAVA_TOOL_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JAVA_TOOL_OPTIONS", value: "@/opt/keycloak/data/db.args" }]; }, /spec\.env JAVA_TOOL_OPTIONS contains "@"/],
+    "an @argfile in JAVA_LOCALE (kc.sh appends it to JAVA_OPTS)": [(kc) => { kc.spec.env = [{ name: "JAVA_LOCALE", value: "@/opt/keycloak/data/db.args" }]; }, /spec\.env JAVA_LOCALE contains "@"/],
     // kc.sh never initialises result or CONFIG_ARGS, so their environment
     // values reach the java command line through eval; any name outside the
     // allow-list is refused rather than modelled one by one.
@@ -451,8 +451,8 @@ test("the provider check rejects another image, a refused feature and a mount at
     // arguments; a mounted file could carry -Dkc.features=scripts.
     "an @argfile in JAVA_OPTS_APPEND": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS_APPEND", value: "-Xmx1g @/opt/keycloak/data/features.args" }]; }), /spec env JAVA_OPTS_APPEND contains "@"/],
     "an @argfile in pod JDK_JAVA_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JDK_JAVA_OPTIONS", value: "@features.args" }]; }), /podTemplate containers\[0\] env JDK_JAVA_OPTIONS contains "@"/],
-    "an @argfile in JAVA_OPTS": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS", value: "@/tmp/features.args" }]; }), /spec env JAVA_OPTS contains "@"/],
-    "an @argfile in JAVA_TOOL_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JAVA_TOOL_OPTIONS", value: "@/tmp/features.args" }]; }), /podTemplate containers\[0\] env JAVA_TOOL_OPTIONS contains "@"/],
+    "an @argfile in JAVA_OPTS": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS", value: "@/opt/keycloak/data/features.args" }]; }), /spec env JAVA_OPTS contains "@"/],
+    "an @argfile in JAVA_TOOL_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JAVA_TOOL_OPTIONS", value: "@/opt/keycloak/data/features.args" }]; }), /podTemplate containers\[0\] env JAVA_TOOL_OPTIONS contains "@"/],
     "KCKEY_ env naming features": [withSpec((s) => { s.env = [{ name: "KC_FOO", value: "scripts" }, { name: "KCKEY_FOO", value: "features" }]; }), /spec env KCKEY_FOO maps KC_FOO to features/]
   };
   const missed = [];
