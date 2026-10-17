@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as realmCheck from "../../ci/check-realm.mjs";
 const { checkRealm, loadFromRepo, secretEnvName } = realmCheck;
@@ -503,6 +506,79 @@ test("DCR: registration policies are declared; anonymous closed, TPP scopes and 
   mutate((ps) => { ps.find((c) => c.subType === "authenticated" && c.providerId === "allowed-protocol-mappers").config["allowed-protocol-mapper-types"].push("oidc-hardcoded-claim-mapper"); }, "DCR policy Allowed Protocol Mapper Types (authenticated): oidc-hardcoded-claim-mapper is not allowed (it could emit fbx_client_type)");
 });
 
+// A running realm as the admin API returns it (and as a partial export holds
+// it): the realm file's clients and client scopes with ids, plus Keycloak's
+// built-in clients and scopes. The built-in clients are neither in the
+// registry nor tagged fbx.client-type, so their fullScopeAllowed (true for
+// some of them here) is not checked.
+const LIVE_ENV = { KEYCLOAK_URL: "http://kc.test", KEYCLOAK_CLIENTID: "x", KEYCLOAK_CLIENTSECRET: "y" };
+function liveRealm() {
+  const { realm } = fresh();
+  const builtIn = [["account", false], ["account-console", false], ["admin-cli", true], ["broker", false], ["realm-management", false], ["security-admin-console", true]]
+    .map(([clientId, fullScopeAllowed]) => ({ clientId, fullScopeAllowed, attributes: {}, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [] }));
+  const builtInScopes = [
+    { name: "basic", protocol: "openid-connect", attributes: {}, protocolMappers: [] },
+    { name: "roles", protocol: "openid-connect", attributes: {}, protocolMappers: [{ name: "audience resolve", protocol: "openid-connect", protocolMapper: "oidc-audience-resolve-mapper", config: {} }] },
+    { name: "offline_access", protocol: "openid-connect", attributes: {}, protocolMappers: [] }
+  ];
+  return {
+    realm: "fintechbankx",
+    clients: [...realm.clients, ...builtIn].map((c) => ({ id: `id-${c.clientId}`, ...c })),
+    clientScopes: [...realm.clientScopes, ...builtInScopes].map((sc) => ({ id: `id-${sc.name}`, ...sc })),
+    defaultDefaultClientScopes: [...realm.defaultDefaultClientScopes],
+    defaultOptionalClientScopes: ["offline_access"],
+    roles: { realm: structuredClone(realm.roles.realm), client: {} },
+    clientScopeMappings: {}
+  };
+}
+// The admin API of that realm: token, paged clients, client scopes, realm
+// default scopes, a client's roles, and the effective (composite) client-role
+// scope mappings of a client or client scope.
+function adminApi(live) {
+  const urls = [];
+  const json = (body) => new Response(JSON.stringify(body), { status: 200 });
+  const byId = (list, id) => list.find((x) => x.id === decodeURIComponent(id));
+  const fetch = async (url) => {
+    urls.push(String(url));
+    const u = new URL(url);
+    if (u.pathname.endsWith("/protocol/openid-connect/token")) return json({ access_token: "t" });
+    const p = u.pathname.replace(/^\/admin\/realms\/fintechbankx/, "");
+    if (p === "/clients") {
+      const first = Number(u.searchParams.get("first"));
+      return json(live.clients.slice(first, first + Number(u.searchParams.get("max"))));
+    }
+    if (p === "/client-scopes") return json(live.clientScopes);
+    if (p === "/default-default-client-scopes") return json(live.defaultDefaultClientScopes.map((name) => ({ id: `id-${name}`, name })));
+    if (p === "/default-optional-client-scopes") return json(live.defaultOptionalClientScopes.map((name) => ({ id: `id-${name}`, name })));
+    let m = p.match(/^\/clients\/([^/]+)\/roles$/);
+    if (m) return json(live.roles.client[byId(live.clients, m[1]).clientId] || []);
+    m = p.match(/^\/(clients|client-scopes)\/([^/]+)\/scope-mappings\/clients\/([^/]+)\/composite$/);
+    if (m) {
+      const holder = m[1] === "clients" ? { client: byId(live.clients, m[2]).clientId } : { clientScope: byId(live.clientScopes, m[2]).name };
+      const callee = byId(live.clients, m[3]).clientId;
+      const roles = (live.clientScopeMappings[callee] || [])
+        .filter((x) => (holder.client ? x.client === holder.client : x.clientScope === holder.clientScope))
+        .flatMap((x) => x.roles);
+      return json(roles.map((name) => ({ name })));
+    }
+    return new Response("not found", { status: 404 });
+  };
+  return { fetch, urls };
+}
+function withExportFile(exported, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "live-"));
+  const file = path.join(dir, "partial-export.json");
+  fs.writeFileSync(file, JSON.stringify(exported));
+  const done = () => fs.rmSync(dir, { recursive: true });
+  let r;
+  try { r = fn(file); } catch (e) { done(); throw e; }
+  if (r instanceof Promise) return r.finally(done);
+  done();
+  return r;
+}
+const liveFromFile = (exported) => withExportFile(exported, (file) => realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live-export", file] }));
+const runLiveExport = (exported) => withExportFile(exported, (file) => execFileSync(process.execPath, [path.join(root, "scripts/ci/check-realm.mjs"), "--live-export", file], { encoding: "utf8", stdio: "pipe" }));
+
 // Live drift check: runtime TPP clients are not in the realm file.
 test("live: a client tagged open-finance-tpp without the default client-type scope fails (e.g. one registered by DCR before it was closed)", async () => {
   const input = fresh();
@@ -519,33 +595,24 @@ test("live: a client tagged open-finance-tpp without the default client-type sco
   const sneaky = { ...structuredClone(svc), defaultClientScopes: [...svc.defaultClientScopes, "fbx-client-type-open-finance-tpp"] };
   assert.deepEqual(realmCheck.liveTppErrors([sneaky]), ["svc-pay-request-to-pay: scope fbx-client-type-open-finance-tpp on a client that is not fbx.client-type=open-finance-tpp"]);
 
-  const fsm = await import("node:fs");
-  const os = await import("node:os");
-  const dir = fsm.mkdtempSync(path.join(os.tmpdir(), "live-"));
-  const file = path.join(dir, "partial-export.json");
-  fsm.writeFileSync(file, JSON.stringify({ realm: "fintechbankx", clients: [onboarded, dcrMade] }));
-  const fromFile = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live-export", file] });
-  assert.equal(fromFile.clients.length, 2);
-  assert.equal(fromFile.errors.length, 1);
-  const { execFileSync } = await import("node:child_process");
-  assert.throws(() => execFileSync(process.execPath, [path.join(root, "scripts/ci/check-realm.mjs"), "--live-export", file], { stdio: "pipe" }), /of-tpp-dcr2: open-finance-tpp clients must carry client scope/);
-  fsm.writeFileSync(file, JSON.stringify([onboarded]));
-  assert.match(execFileSync(process.execPath, [path.join(root, "scripts/ci/check-realm.mjs"), "--live-export", file], { encoding: "utf8" }), /realm-check --live: OK \(1 clients, 1 open-finance-tpp\)/);
-  fsm.rmSync(dir, { recursive: true });
+  // --live-export: the TPP rules run next to the service-client rules on a
+  // partial export of the running realm.
+  const base = liveRealm();
+  // The DCR-made client has no fullScopeAllowed, which Keycloak reads as true.
+  const dcrErrors = ["of-tpp-dcr2: open-finance-tpp clients must carry client scope fbx-client-type-open-finance-tpp as a default scope",
+    "of-tpp-dcr2: fullScopeAllowed must be false (Keycloak treats a missing value as true)"];
+  const out = await liveFromFile({ ...base, clients: [...base.clients, onboarded, dcrMade] });
+  assert.deepEqual(out.errors, dcrErrors);
+  assert.throws(() => runLiveExport({ ...base, clients: [...base.clients, onboarded, dcrMade] }), /of-tpp-dcr2: open-finance-tpp clients must carry client scope/);
+  assert.match(runLiveExport({ ...base, clients: [...base.clients, onboarded] }), new RegExp(`realm-check --live: OK \\(${base.clients.length + 1} clients, 2 open-finance-tpp, 16 service clients\\)`));
 
   // --live: admin token, then GET /clients page by page.
-  const urls = [];
-  const fetch = async (url) => {
-    urls.push(String(url));
-    if (String(url).endsWith("/protocol/openid-connect/token")) return new Response(JSON.stringify({ access_token: "t" }), { status: 200 });
-    const first = Number(new URL(url).searchParams.get("first"));
-    const page = first === 0 ? Array.from({ length: 100 }, (_, i) => ({ clientId: `c${i}`, attributes: {} })) : [dcrMade];
-    return new Response(JSON.stringify(page), { status: 200 });
-  };
-  const live = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: { KEYCLOAK_URL: "http://kc.test", KEYCLOAK_CLIENTID: "x", KEYCLOAK_CLIENTSECRET: "y" }, fetch });
+  const filler = Array.from({ length: 100 - base.clients.length }, (_, i) => ({ id: `c${i}`, clientId: `c${i}`, attributes: {} }));
+  const api = adminApi({ ...base, clients: [...base.clients, ...filler, dcrMade] });
+  const live = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
   assert.equal(live.clients.length, 101);
-  assert.equal(live.errors.length, 1);
-  assert.ok(urls.includes("http://kc.test/admin/realms/fintechbankx/clients?first=100&max=100"), urls.join(" "));
+  assert.deepEqual(live.errors, dcrErrors);
+  assert.ok(api.urls.includes("http://kc.test/admin/realms/fintechbankx/clients?first=100&max=100"), api.urls.join(" "));
 });
 
 // Accounts ledger (accounts ledger thread 2026-10-17; service repository
@@ -683,4 +750,194 @@ test("the gate refuses the ledger audience as a mapper, a missing, extra or defa
   onChannel.registry.channelClients.find((c) => c.clientId === "fintechbankx-staff-web").audiences.push(LEDGER);
   client(onChannel, "fintechbankx-staff-web").protocolMappers.push(ledgerMapper);
   assert.ok(checkRealm(onChannel).some((e) => e.startsWith(`fintechbankx-staff-web: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE}`)), checkRealm(onChannel).join("\n"));
+});
+
+// DevSecOps review (should-fix 1): a by-scope callee's audience reaches a
+// token only through its aud- scope. Another client scope (customer-id,
+// payments, the client-type scope, a new scope, a realm default scope) with an
+// audience mapper naming it, as client or custom audience, is refused; so is a
+// client role of the callee in another client's or scope's role scope, which
+// Keycloak's audience resolve mapper (built-in scope roles) turns into aud.
+const ledgerAudMapper = (key = "included.client.audience") => ({ name: "ledger", protocol: "openid-connect", protocolMapper: "oidc-audience-mapper", consentRequired: false,
+  config: { [key]: LEDGER, "access.token.claim": "true", "id.token.claim": "false" } });
+const viaOtherScope = (name) => `client scope ${name}: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope), never through another client scope`;
+const viaRealmDefault = (name) => `realm: default scope ${name} carries audience ${LEDGER} (registry audienceByScope); a client created without explicit scopes would get it`;
+
+test("by-scope audience: the customer-id, payments and client-type scopes carry no ledger audience, as client or custom audience", () => {
+  for (const name of ["customer-id", "payments", "fbx-client-type-open-finance-tpp"]) {
+    for (const key of ["included.client.audience", "included.custom.audience"]) {
+      const input = fresh();
+      scope(input, name).protocolMappers.push(ledgerAudMapper(key));
+      failsWith(input, viaOtherScope(name));
+    }
+  }
+  // customer-id is also a realm default scope.
+  const input = fresh();
+  scope(input, "customer-id").protocolMappers.push(ledgerAudMapper());
+  failsWith(input, viaRealmDefault("customer-id"));
+});
+
+test("by-scope audience: a new client scope given to a client as a default scope carries no ledger audience", () => {
+  const input = fresh();
+  input.realm.clientScopes.push({ name: "ledger-reader", protocol: "openid-connect", attributes: {}, protocolMappers: [ledgerAudMapper("included.custom.audience")] });
+  client(input, "svc-cus-profile-kyc").defaultClientScopes.push("ledger-reader");
+  failsWith(input, viaOtherScope("ledger-reader"));
+  // Another aud- scope is another scope too.
+  const stale = fresh();
+  stale.realm.clientScopes.push({ name: "aud-svc-cus-profile-kyc", protocol: "openid-connect", attributes: {}, protocolMappers: [ledgerAudMapper()] });
+  failsWith(stale, viaOtherScope("aud-svc-cus-profile-kyc"));
+});
+
+test("by-scope audience: a realm default scope (default or optional) carries no ledger audience", () => {
+  const input = fresh();
+  input.realm.clientScopes.push({ name: "ledger-everywhere", protocol: "openid-connect", attributes: {}, protocolMappers: [ledgerAudMapper()] });
+  input.realm.defaultOptionalClientScopes = ["ledger-everywhere"];
+  failsWith(input, viaRealmDefault("ledger-everywhere"));
+  failsWith(input, viaOtherScope("ledger-everywhere"));
+});
+
+test("by-scope audience: a client mapper with the ledger as custom audience is refused", () => {
+  const input = fresh();
+  client(input, "svc-cus-profile-kyc").protocolMappers.push(ledgerAudMapper("included.custom.audience"));
+  failsWith(input, `svc-cus-profile-kyc: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope), never through a mapper`);
+  failsWith(input, `svc-cus-profile-kyc: audience mappers custom:${LEDGER} != registry <none>`);
+});
+
+test("by-scope audience: ledger client roles may exist, but none may sit in another client's or scope's role scope (audience resolve)", () => {
+  const base = fresh();
+  // Read from the realm: the ledger has no client roles today and no client
+  // role is scope-mapped anywhere.
+  assert.equal(base.realm.roles.client, undefined);
+  assert.deepEqual(base.realm.clientScopeMappings, {});
+  base.realm.roles.client = { [LEDGER]: [{ name: "ledger-reader", composite: false, clientRole: true }] };
+  assert.deepEqual(checkRealm(base), [], "a role of the ledger's own is not a route");
+  const tail = `, so tokens issued with it would carry aud=${LEDGER} (audience resolve); ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope)`;
+
+  const toClient = structuredClone(base);
+  toClient.realm.clientScopeMappings = { [LEDGER]: [{ client: "svc-cus-profile-kyc", roles: ["ledger-reader"] }] };
+  failsWith(toClient, `${LEDGER}: client roles ledger-reader are in the role scope of client svc-cus-profile-kyc${tail}`);
+
+  const toScope = structuredClone(base);
+  toScope.realm.clientScopeMappings = { [LEDGER]: [{ clientScope: "roles", roles: ["ledger-reader"] }] };
+  failsWith(toScope, `${LEDGER}: client roles ledger-reader are in the role scope of client scope roles${tail}`);
+
+  const composite = structuredClone(base);
+  Object.assign(composite.realm.roles.realm.find((r) => r.name === "service"), { composite: true, composites: { client: { [LEDGER]: ["ledger-reader"] } } });
+  failsWith(composite, `role service: composite of ${LEDGER} client roles ledger-reader${tail}`);
+});
+
+// DevSecOps review (should-fix 2): fullScopeAllowed is false on every client
+// of the realm file (service, first-party public, TPP template, staff SSO);
+// Keycloak's default when the key is absent is true.
+test("fullScopeAllowed must be false on every client, absent counts as true", () => {
+  for (const c of fresh().realm.clients) assert.equal(c.fullScopeAllowed, false, c.clientId);
+  const cases = [
+    [LEDGER, (c) => { delete c.fullScopeAllowed; }],
+    ["svc-pay-request-to-pay", (c) => { c.fullScopeAllowed = true; }],
+    ["fintechbankx-mobile", (c) => { delete c.fullScopeAllowed; }],
+    ["of-tpp-conformance-template", (c) => { c.fullScopeAllowed = true; }],
+    ["svc-obs-grafana", (c) => { delete c.fullScopeAllowed; }]
+  ];
+  for (const [id, mutate] of cases) {
+    const input = fresh();
+    mutate(client(input, id));
+    failsWith(input, `${id}: fullScopeAllowed must be false (Keycloak treats a missing value as true)`);
+  }
+});
+
+// DevSecOps review (should-fix 3): the live drift check holds a running
+// Keycloak to the same service-client rules, through the admin API and
+// through a partial export.
+const liveClient = (live, id) => live.clients.find((c) => c.clientId === id);
+const liveScope = (live, name) => live.clientScopes.find((x) => x.name === name);
+const liveErrors = async (live) => {
+  const viaApi = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: adminApi(live).fetch });
+  const viaFile = await liveFromFile(live);
+  assert.deepEqual(viaFile.errors, viaApi.errors, "--live and --live-export disagree");
+  return viaApi.errors;
+};
+
+test("live: a running realm that matches the realm-as-code passes, through the admin API and a partial export", async () => {
+  const live = liveRealm();
+  assert.deepEqual(await liveErrors(live), []);
+  assert.match(runLiveExport(live), new RegExp(`realm-check --live: OK \\(${live.clients.length} clients, 1 open-finance-tpp, 16 service clients\\)`));
+  const api = adminApi(live);
+  await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
+  for (const p of ["/client-scopes", "/default-default-client-scopes", "/default-optional-client-scopes", `/clients/id-${LEDGER}/roles`]) {
+    assert.ok(api.urls.includes(`http://kc.test/admin/realms/fintechbankx${p}`), `${p} not fetched: ${api.urls.join(" ")}`);
+  }
+  // No ledger roles: no scope-mapping lookups needed.
+  assert.ok(!api.urls.some((u) => u.includes("/scope-mappings/")), api.urls.join(" "));
+});
+
+test("live: drift from the service-client rules fails, through the admin API and a partial export", async () => {
+  const kycMapper = () => structuredClone(client(fresh(), "svc-ln-loan-lifecycle").protocolMappers[0]);
+  const ledgerRole = (l, mapping) => { l.roles.client[LEDGER] = [{ name: "ledger-reader", composite: false, clientRole: true }]; l.clientScopeMappings[LEDGER] = [mapping]; };
+  const tail = `, so tokens issued with it would carry aud=${LEDGER} (audience resolve); ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope)`;
+  const cases = [
+    ["ledger audience as a caller's mapper", (l) => liveClient(l, "svc-ln-loan-lifecycle").protocolMappers.push(ledgerAudMapper()),
+      ["svc-ln-loan-lifecycle: audience mappers svc-acc-accounts-ledger,svc-cus-profile-kyc != registry svc-cus-profile-kyc",
+        `svc-ln-loan-lifecycle: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope), never through a mapper`]],
+    ["registry audience mapper removed", (l) => { liveClient(l, "svc-ln-loan-lifecycle").protocolMappers = []; },
+      ["svc-ln-loan-lifecycle: audience mappers <none> != registry svc-cus-profile-kyc"]],
+    ["ledger scope removed from a caller", (l) => { liveClient(l, "svc-pay-bulk-orchestration").optionalClientScopes = []; },
+      [`svc-pay-bulk-orchestration: optional audience scopes <none> != registry ${LEDGER_SCOPE}`]],
+    ["ledger scope on a client that does not call the ledger", (l) => liveClient(l, "svc-cus-profile-kyc").optionalClientScopes.push(LEDGER_SCOPE),
+      [`svc-cus-profile-kyc: optional audience scopes ${LEDGER_SCOPE} != registry <none>`]],
+    ["ledger scope as a client default", (l) => liveClient(l, "svc-pay-recurring-mandates").defaultClientScopes.push(LEDGER_SCOPE),
+      [`svc-pay-recurring-mandates: audience scope ${LEDGER_SCOPE} must be optional, not default`]],
+    ["ledger scope deleted", (l) => { l.clientScopes = l.clientScopes.filter((x) => x.name !== LEDGER_SCOPE); },
+      [`client scope ${LEDGER_SCOPE} missing (registry ${LEDGER} has audienceByScope)`]],
+    ["second mapper in the ledger scope", (l) => liveScope(l, LEDGER_SCOPE).protocolMappers.push(kycMapper()),
+      [`client scope ${LEDGER_SCOPE}: must carry exactly one access-token audience mapper for ${LEDGER}`]],
+    ["ledger audience in customer-id (a realm default)", (l) => liveScope(l, "customer-id").protocolMappers.push(ledgerAudMapper()),
+      [viaOtherScope("customer-id"), viaRealmDefault("customer-id")]],
+    ["ledger audience in a new realm-default optional scope", (l) => {
+      l.clientScopes.push({ id: "id-ledger-everywhere", name: "ledger-everywhere", protocol: "openid-connect", attributes: {}, protocolMappers: [ledgerAudMapper("included.custom.audience")] });
+      l.defaultOptionalClientScopes.push("ledger-everywhere");
+    }, [viaOtherScope("ledger-everywhere"), viaRealmDefault("ledger-everywhere")]],
+    ["ledger scope as a realm default", (l) => l.defaultDefaultClientScopes.push(LEDGER_SCOPE),
+      [`realm: audience scope ${LEDGER_SCOPE} must not be a realm default scope`]],
+    ["fullScopeAllowed true on the ledger client", (l) => { liveClient(l, LEDGER).fullScopeAllowed = true; },
+      [`${LEDGER}: fullScopeAllowed must be false (Keycloak treats a missing value as true)`]],
+    ["fullScopeAllowed true on a runtime TPP client", (l) => l.clients.push({ ...structuredClone(liveClient(l, "of-tpp-conformance-template")), id: "id-of-tpp-acme-pay", clientId: "of-tpp-acme-pay", fullScopeAllowed: true }),
+      ["of-tpp-acme-pay: fullScopeAllowed must be false (Keycloak treats a missing value as true)"]],
+    ["ledger client role scope-mapped to a client", (l) => ledgerRole(l, { client: "svc-cus-profile-kyc", roles: ["ledger-reader"] }),
+      [`${LEDGER}: client roles ledger-reader are in the role scope of client svc-cus-profile-kyc${tail}`]],
+    ["ledger client role scope-mapped to a client scope", (l) => ledgerRole(l, { clientScope: "roles", roles: ["ledger-reader"] }),
+      [`${LEDGER}: client roles ledger-reader are in the role scope of client scope roles${tail}`]],
+    ["service client missing", (l) => { l.clients = l.clients.filter((c) => c.clientId !== LEDGER); },
+      [`service client ${LEDGER} missing from realm`]]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const live = liveRealm();
+    mutate(live);
+    const errors = await liveErrors(live);
+    for (const e of expected) assert.ok(errors.includes(e), `${name}: ${e} not in\n${errors.join("\n")}`);
+  }
+  // A ledger role of its own, mapped nowhere, passes (and is looked up).
+  const own = liveRealm();
+  own.roles.client[LEDGER] = [{ name: "ledger-reader", composite: false, clientRole: true }];
+  assert.deepEqual(await liveErrors(own), []);
+  const api = adminApi(own);
+  await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
+  assert.ok(api.urls.includes(`http://kc.test/admin/realms/fintechbankx/clients/id-svc-cus-profile-kyc/scope-mappings/clients/id-${LEDGER}/composite`), api.urls.join(" "));
+  assert.ok(api.urls.includes(`http://kc.test/admin/realms/fintechbankx/client-scopes/id-roles/scope-mappings/clients/id-${LEDGER}/composite`), api.urls.join(" "));
+});
+
+test("live: --live-export needs a partial export with clients, client scopes, realm default scopes and roles", async () => {
+  const live = liveRealm();
+  await assert.rejects(liveFromFile(live.clients), /--live-export: a GET \/clients array covers the TPP rules only/);
+  assert.throws(() => runLiveExport(live.clients), /realm-check --live: FAILED: --live-export: a GET \/clients array covers the TPP rules only/);
+  for (const key of ["clients", "clientScopes", "defaultDefaultClientScopes", "defaultOptionalClientScopes", "roles"]) {
+    const partial = liveRealm();
+    delete partial[key];
+    await assert.rejects(liveFromFile(partial), new RegExp(`--live-export: the export lacks ${key}`), key);
+  }
+  // clientScopeMappings may be absent only while the ledger has no client roles.
+  const noMappings = liveRealm();
+  delete noMappings.clientScopeMappings;
+  assert.deepEqual((await liveFromFile(noMappings)).errors, []);
+  noMappings.roles.client[LEDGER] = [{ name: "ledger-reader", composite: false, clientRole: true }];
+  await assert.rejects(liveFromFile(noMappings), new RegExp(`--live-export: the export lacks clientScopeMappings, needed because ${LEDGER} has client roles`));
 });

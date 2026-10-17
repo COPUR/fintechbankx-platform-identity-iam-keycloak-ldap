@@ -5,13 +5,16 @@
 // that every $(env:NAME) placeholder is supplied by the realm import Job.
 //
 // usage: node scripts/ci/check-realm.mjs [--root <repo-root>]
+//        node scripts/ci/check-realm.mjs (--live | --live-export <file>) [--realm <name>] [--root <repo-root>]
+//        (live drift check, see checkLive below)
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, CLIENT_TYPE_CLAIM, TPP_CLIENT_TYPE_SCOPE, DCR_SOURCES, DCR_POLICY_TYPE, tppClientErrors, clientTypeMappers, liveTppErrors, parseList, clientsOf, fetchClients } from "../realm/tpp-rules.mjs";
+import { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, CLIENT_TYPE_CLAIM, TPP_CLIENT_TYPE_SCOPE, DCR_SOURCES, DCR_POLICY_TYPE, tppClientErrors, clientTypeMappers, liveTppErrors, parseList, fetchClients } from "../realm/tpp-rules.mjs";
 import { fetchAdminToken } from "../realm/apply-admin-permissions.mjs";
+import { audiences, scopedCalleesOf, serviceClientErrors } from "../realm/service-client-rules.mjs";
 
 export const CONTRACT_ROLES = ["customer", "banker", "loan_officer", "admin", "service", "auditor", "compliance_officer"];
 export const STAFF_ROLE_GROUPS = {
@@ -28,21 +31,10 @@ const SECRET_KEY = /(secret|credential|password|passwd|private.?key)/i;
 
 export const secretEnvName = (clientId) => "FBX_OIDC_SECRET_" + clientId.toUpperCase().replace(/-/g, "_");
 
-function audiences(client) {
-  return (client.protocolMappers || [])
-    .filter((m) => m.protocolMapper === "oidc-audience-mapper")
-    .map((m) => m.config?.["included.client.audience"])
-    .sort();
-}
-
-// Audience scopes (registry audienceByScope): such a callee is reached only
-// through the optional client scope aud-<callee>, which holds its audience
-// mapper, never through a mapper on a client.
-export const audienceScopeName = (aud) => `aud-${aud}`;
-const AUDIENCE_SCOPE = /^aud-/;
-function audienceScopes(client) {
-  return (client.optionalClientScopes || []).filter((s) => AUDIENCE_SCOPE.test(s)).sort();
-}
+// Audience scopes (registry audienceByScope), audience mappers and
+// fullScopeAllowed: scripts/realm/service-client-rules.mjs, shared with the
+// live drift check below.
+export { audienceScopeName, serviceClientErrors } from "../realm/service-client-rules.mjs";
 
 function walk(value, visit, trail = []) {
   if (Array.isArray(value)) {
@@ -113,12 +105,12 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
 
   const clients = new Map((realm.clients || []).map((c) => [c.clientId, c]));
   const knownIds = new Set(clients.keys());
-  const scopedCallees = new Set(registry.clients.filter((c) => c.audienceByScope === true).map((c) => c.clientId));
 
-  // Service clients: one per registry entry, client credentials only.
+  // Service clients: one per registry entry (a missing one is reported by
+  // serviceClientErrors), client credentials only.
   for (const entry of registry.clients) {
     const c = clients.get(entry.clientId);
-    if (!c) { err(`service client ${entry.clientId} missing from realm`); continue; }
+    if (!c) continue;
     if (c.publicClient !== false) err(`${c.clientId}: must be confidential`);
     if (c.serviceAccountsEnabled !== true) err(`${c.clientId}: service account must be enabled`);
     for (const f of ["standardFlowEnabled", "implicitFlowEnabled", "directAccessGrantsEnabled"]) {
@@ -129,10 +121,8 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     if (c.attributes?.["fbx.service-slug"] !== entry.serviceSlug) err(`${c.clientId}: attribute fbx.service-slug must be ${entry.serviceSlug}`);
     const sa = (realm.users || []).find((u) => u.serviceAccountClientId === c.clientId);
     if (!sa || !(sa.realmRoles || []).includes("service")) err(`${c.clientId}: service account must hold realm role service`);
-    if (c.fullScopeAllowed === false) {
-      const sm = (realm.scopeMappings || []).find((s) => s.client === c.clientId);
-      if (!sm || !(sm.roles || []).includes("service")) err(`${c.clientId}: scope mapping for role service missing`);
-    }
+    const sm = (realm.scopeMappings || []).find((s) => s.client === c.clientId);
+    if (!sm || !(sm.roles || []).includes("service")) err(`${c.clientId}: scope mapping for role service missing`);
     // No realm-management role on any service client (ADMIN_ROLES_ALLOWED is
     // empty): user administration is granted per group through fine-grained
     // admin permissions v2 (realm/admin-permissions.json), never realm-wide.
@@ -141,15 +131,12 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     if ((sa?.clientRoles?.["realm-management"] || []).length) err(`${c.clientId}: service account must not hold realm-management roles`);
     else if (sa && !Array.isArray(sa.clientRoles?.["realm-management"])) err(`${c.clientId}: service account must list clientRoles realm-management: [] (so keycloak-config-cli removes earlier grants)`);
     if ((realm.clientScopeMappings?.["realm-management"] || []).some((m) => m.client === c.clientId)) err(`${c.clientId}: realm-management scope mapping is not allowed`);
-    const want = (entry.audiences || []).filter((a) => !scopedCallees.has(a)).sort();
-    if (JSON.stringify(audiences(c)) !== JSON.stringify(want)) {
-      err(`${c.clientId}: audience mappers ${audiences(c).join(",") || "<none>"} != registry ${want.join(",") || "<none>"}`);
-    }
-    const wantScopes = (entry.audiences || []).filter((a) => scopedCallees.has(a)).map(audienceScopeName).sort();
-    if (JSON.stringify(audienceScopes(c)) !== JSON.stringify(wantScopes)) {
-      err(`${c.clientId}: optional audience scopes ${audienceScopes(c).join(",") || "<none>"} != registry ${wantScopes.join(",") || "<none>"}`);
-    }
   }
+  // Audience mappers and optional audience scopes against the registry, the
+  // by-scope callees reached only through their aud- scope (no client mapper,
+  // other scope, realm default or client-role scope mapping), and
+  // fullScopeAllowed false on every client.
+  for (const m of serviceClientErrors(realm, registry)) err(m);
 
   // Channel clients: web, mobile, TPP template.
   for (const entry of registry.channelClients || []) {
@@ -172,7 +159,6 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
       const staff = entry.userType === "staff";
       const wantRoles = (staff ? [...STAFF_ROLES] : ["customer"]).sort();
       const sm = [...((realm.scopeMappings || []).find((x) => x.client === c.clientId)?.roles || [])].sort();
-      if (c.fullScopeAllowed !== false) e("fullScopeAllowed must be false");
       if (JSON.stringify(sm) !== JSON.stringify(wantRoles)) e(`scope mapping ${sm.join(",")} != ${wantRoles.join(",")}`);
       if (!staff) for (const a of new Set([...audiences(c), ...(entry.audiences || [])])) if (STAFF_ONLY_AUDIENCES.includes(a)) e(`staff-only audience ${a} on a customer client`);
       const scopes = [...(c.defaultClientScopes || []), ...(c.optionalClientScopes || [])];
@@ -227,36 +213,9 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     ...(registry.channelClients || []).map((c) => c.clientId),
     ...(registry.ssoClients || []).map((c) => c.clientId)
   ]);
-  const serviceClientIds = new Set(registry.clients.map((c) => c.clientId));
   for (const c of clients.values()) {
     if (!registered.has(c.clientId)) err(`client ${c.clientId} is not in realm/service-clients.json`);
     for (const a of audiences(c)) if (!knownIds.has(a)) err(`${c.clientId}: audience ${a} is not a client of the realm`);
-    for (const a of audiences(c)) {
-      if (scopedCallees.has(a)) err(`${c.clientId}: audience ${a} is reached only through the optional scope ${audienceScopeName(a)} (registry audienceByScope), never through a mapper`);
-    }
-    if (!serviceClientIds.has(c.clientId) && audienceScopes(c).length) err(`${c.clientId}: optional audience scopes are for service clients only`);
-    for (const name of c.defaultClientScopes || []) if (AUDIENCE_SCOPE.test(name)) err(`${c.clientId}: audience scope ${name} must be optional, not default`);
-  }
-
-  // One audience scope per audienceByScope callee, holding exactly one
-  // access-token audience mapper for it; never a realm default (a client
-  // created without explicit scopes would get it).
-  const audienceScopeByName = new Map((realm.clientScopes || []).filter((s) => AUDIENCE_SCOPE.test(s.name)).map((s) => [s.name, s]));
-  for (const aud of scopedCallees) {
-    const name = audienceScopeName(aud);
-    const s = audienceScopeByName.get(name);
-    if (!s) { err(`client scope ${name} missing (registry ${aud} has audienceByScope)`); continue; }
-    const ms = s.protocolMappers || [];
-    const ok = s.protocol === "openid-connect" && ms.length === 1 && ms[0].protocolMapper === "oidc-audience-mapper"
-      && ms[0].config?.["included.client.audience"] === aud && ms[0].config?.["access.token.claim"] === "true";
-    if (!ok) err(`client scope ${name}: must carry exactly one access-token audience mapper for ${aud}`);
-  }
-  for (const name of audienceScopeByName.keys()) {
-    const aud = name.slice("aud-".length);
-    if (!scopedCallees.has(aud)) err(`client scope ${name}: no registry client with audienceByScope is named ${aud}`);
-  }
-  for (const name of [...(realm.defaultDefaultClientScopes || []), ...(realm.defaultOptionalClientScopes || [])]) {
-    if (AUDIENCE_SCOPE.test(name)) err(`realm: audience scope ${name} must not be a realm default scope`);
   }
 
   // Fine-grained admin permissions (applied by scripts/realm/apply-admin-permissions.mjs).
@@ -458,35 +417,104 @@ export function loadFromRepo(root) {
   return { realm, registry, adminPermissions, importEnv, importSecretKeys, importSecretRefs };
 }
 
-// Live drift check (runtime TPP clients are not in the realm file):
-//   --live-export <file>  partial export ({clients}) or GET /clients output
-//   --live                reads GET /admin/realms/<realm>/clients from
+// Live drift check: the clients and client scopes of a running realm against
+// the TPP rules (scripts/realm/tpp-rules.mjs; runtime TPP clients are not in
+// the realm file) and the service-client rules
+// (scripts/realm/service-client-rules.mjs) with the registry
+// realm/service-clients.json.
+//   --live-export <file>  partial export of the realm (POST
+//                         .../partial-export?exportClients=true&exportGroupsAndRoles=true):
+//                         an object with clients, clientScopes,
+//                         defaultDefaultClientScopes and
+//                         defaultOptionalClientScopes (scope names), roles,
+//                         and clientScopeMappings (may be absent only when no
+//                         audienceByScope callee has client roles)
+//   --live                reads the same through the admin API from
 //                         KEYCLOAK_URL with the KEYCLOAK_* credential
 //                         variables of apply-admin-permissions.mjs
 //   --realm <name>        realm for --live (default fintechbankx)
+//   --root <repo-root>    where realm/service-clients.json is read
+const EXPORT_KEYS = ["clients", "clientScopes", "defaultDefaultClientScopes", "defaultOptionalClientScopes"];
+export function liveExportView(json, registry) {
+  if (Array.isArray(json)) throw new Error("--live-export: a GET /clients array covers the TPP rules only; export the realm with partial-export?exportClients=true&exportGroupsAndRoles=true");
+  for (const k of EXPORT_KEYS) if (!Array.isArray(json?.[k])) throw new Error(`--live-export: the export lacks ${k} (partial-export?exportClients=true&exportGroupsAndRoles=true)`);
+  if (!json.roles || typeof json.roles !== "object") throw new Error("--live-export: the export lacks roles (partial-export with exportGroupsAndRoles=true)");
+  const withRoles = [...scopedCalleesOf(registry)].filter((id) => (json.roles.client?.[id] || []).length);
+  if (withRoles.length && !json.clientScopeMappings) throw new Error(`--live-export: the export lacks clientScopeMappings, needed because ${withRoles.join(", ")} has client roles`);
+  return { ...Object.fromEntries(EXPORT_KEYS.map((k) => [k, json[k]])), roles: json.roles, clientScopeMappings: json.clientScopeMappings || {} };
+}
+
+// The same view from the admin API (view-clients and view-realm). Client-role
+// scope mappings are read only for a by-scope callee that has client roles:
+// the roles of that callee in each client's and client scope's effective role
+// scope (composites expanded; for a client with fullScopeAllowed, all of them).
+export async function fetchLiveView({ fetch = globalThis.fetch, baseUrl, token, realm, registry }) {
+  const base = `${String(baseUrl).replace(/\/+$/, "")}/admin/realms/${encodeURIComponent(realm)}`;
+  const get = async (p) => {
+    const url = base + p;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+    if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
+    return res.json();
+  };
+  const names = (list) => list.map((s) => s.name);
+  const clients = await fetchClients({ fetch, baseUrl, token, realm });
+  const clientScopes = await get("/client-scopes");
+  const view = {
+    clients,
+    clientScopes,
+    defaultDefaultClientScopes: names(await get("/default-default-client-scopes")),
+    defaultOptionalClientScopes: names(await get("/default-optional-client-scopes")),
+    roles: { client: {} },
+    clientScopeMappings: {}
+  };
+  for (const callee of scopedCalleesOf(registry)) {
+    const c = clients.find((x) => x.clientId === callee);
+    if (!c) continue; // reported as missing by serviceClientErrors
+    const id = encodeURIComponent(c.id);
+    const own = await get(`/clients/${id}/roles`);
+    view.roles.client[callee] = own;
+    if (!own.length) continue;
+    const mappings = [];
+    for (const h of clients) {
+      if (h.clientId === callee) continue;
+      const r = await get(`/clients/${encodeURIComponent(h.id)}/scope-mappings/clients/${id}/composite`);
+      if (r.length) mappings.push({ client: h.clientId, roles: names(r) });
+    }
+    for (const sc of clientScopes) {
+      const r = await get(`/client-scopes/${encodeURIComponent(sc.id)}/scope-mappings/clients/${id}/composite`);
+      if (r.length) mappings.push({ clientScope: sc.name, roles: names(r) });
+    }
+    view.clientScopeMappings[callee] = mappings;
+  }
+  return view;
+}
+
 export async function checkLive({ argv = process.argv, env = process.env, fetch = globalThis.fetch } = {}) {
   const arg = (n) => { const i = argv.indexOf(n); return i > 0 ? argv[i + 1] : undefined; };
-  let clients;
+  const root = arg("--root") || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const registry = JSON.parse(fs.readFileSync(path.join(root, "realm/service-clients.json"), "utf8"));
+  let view;
   if (arg("--live-export")) {
-    clients = clientsOf(JSON.parse(fs.readFileSync(arg("--live-export"), "utf8")));
+    view = liveExportView(JSON.parse(fs.readFileSync(arg("--live-export"), "utf8")), registry);
   } else {
     const token = await fetchAdminToken({ fetch, env });
-    clients = await fetchClients({ fetch, baseUrl: env.KEYCLOAK_URL, token, realm: arg("--realm") || "fintechbankx" });
+    view = await fetchLiveView({ fetch, baseUrl: env.KEYCLOAK_URL, token, realm: arg("--realm") || "fintechbankx", registry });
   }
-  return { clients, errors: liveTppErrors(clients) };
+  return { clients: view.clients, registry, errors: [...liveTppErrors(view.clients), ...serviceClientErrors(view, registry)] };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain && (process.argv.includes("--live") || process.argv.includes("--live-export"))) {
   try {
-    const { clients, errors } = await checkLive();
+    const { clients, registry, errors } = await checkLive();
     const tpps = clients.filter((c) => c.attributes?.["fbx.client-type"] === TPP_CLIENT_TYPE).length;
+    const counts = `${clients.length} clients, ${tpps} open-finance-tpp, ${registry.clients.length} service clients`;
     for (const e of errors) console.error(`realm-check --live: ${e}`);
     if (errors.length) {
-      console.error(`realm-check --live: FAILED (${errors.length} problem(s), ${clients.length} clients, ${tpps} open-finance-tpp)`);
+      console.error(`realm-check --live: FAILED (${errors.length} problem(s), ${counts})`);
       process.exit(1);
     }
-    console.log(`realm-check --live: OK (${clients.length} clients, ${tpps} open-finance-tpp)`);
+    console.log(`realm-check --live: OK (${counts})`);
   } catch (e) {
     console.error(`realm-check --live: FAILED: ${e.message}`);
     process.exit(1);
