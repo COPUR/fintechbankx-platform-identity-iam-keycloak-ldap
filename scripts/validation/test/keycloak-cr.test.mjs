@@ -344,6 +344,75 @@ function kustomizationFiles(dir, seen = new Set()) {
 
 const overlays = fs.readdirSync(path.join(root, "deploy/kustomize/overlays"));
 
+// Known gap (1) of REALM_AS_CODE.md: a script mapper or a custom SPI mapper can
+// write any claim, aud included. check-realm.mjs refuses every mapper that is
+// not on its list of stock Keycloak 26.7.5 mappers; this keeps the deployment
+// from loading other mappers at all. The CR runs the stock image
+// quay.io/keycloak/keycloak:26.7.5 (no provider jars) with neither the scripts
+// feature nor legacy token exchange (token-exchange, v1; preview enables both),
+// and nothing is mounted at /opt/keycloak/providers. Features are read from
+// spec.features only, so features set as an additional option or KC_FEATURES*
+// env var are refused, and the pod template may not replace the image.
+const STOCK_IMAGE = "quay.io/keycloak/keycloak:26.7.5";
+const PROVIDERS_DIR = "/opt/keycloak/providers";
+const REFUSED_FEATURES = /^(scripts|preview|token-exchange)(:v\d+)?$/;
+function providerProblems(kc) {
+  const problems = [];
+  if (kc?.spec?.image !== STOCK_IMAGE) problems.push(`spec.image must be ${STOCK_IMAGE}, found ${JSON.stringify(kc?.spec?.image)}`);
+  for (const f of kc?.spec?.features?.enabled || []) {
+    if (REFUSED_FEATURES.test(String(f).trim().toLowerCase())) problems.push(`spec.features.enabled must not enable ${f} (script mappers or legacy token exchange)`);
+  }
+  for (const o of kc?.spec?.additionalOptions || []) {
+    if (`KC_${envForm(o.name)}`.startsWith("KC_FEATURES")) problems.push(`additional option ${o.name} sets features outside spec.features`);
+  }
+  const pod = kc?.spec?.unsupported?.podTemplate?.spec;
+  for (const [where, c] of [["spec", { env: kc?.spec?.env }], ...(pod?.containers || []).map((c, i) => [`podTemplate containers[${i}]`, c]), ...(pod?.initContainers || []).map((c, i) => [`podTemplate initContainers[${i}]`, c])]) {
+    for (const e of c.env || []) if (envForm(e.name).startsWith("KC_FEATURES")) problems.push(`${where} env ${e.name} sets features outside spec.features`);
+    if (c.image !== undefined) problems.push(`${where} image ${c.image} would replace or add to the stock image`);
+    for (const m of c.volumeMounts || []) {
+      if (pathsOverlap(m.mountPath, PROVIDERS_DIR)) problems.push(`${where} mount at ${m.mountPath} reaches ${PROVIDERS_DIR}, where Keycloak loads provider jars`);
+    }
+  }
+  return problems;
+}
+
+test("the Keycloak CR cannot load script or custom SPI mappers: stock image 26.7.5, no scripts or legacy token-exchange feature, nothing at /opt/keycloak/providers", () => {
+  assert.deepEqual(providerProblems(cr), []);
+  assert.deepEqual(cr.spec.features, { disabled: ["impersonation"] });
+});
+
+test("the provider check rejects another image, a refused feature and a mount at the providers directory", () => {
+  const withSpec = (mutate) => { const kc = structuredClone(cr); mutate(kc.spec); return kc; };
+  const podContainer = (spec) => spec.unsupported.podTemplate.spec.containers[0];
+  const cases = {
+    "a custom image": [withSpec((s) => { s.image = "123456789012.dkr.ecr.me-central-1.amazonaws.com/keycloak:26.7.5"; }), /spec\.image must be/],
+    "an image digest": [withSpec((s) => { s.image = `${STOCK_IMAGE}@sha256:${"0".repeat(64)}`; }), /spec\.image must be/],
+    "another version": [withSpec((s) => { s.image = "quay.io/keycloak/keycloak:26.7.4"; }), /spec\.image must be/],
+    "scripts": [withSpec((s) => { s.features.enabled = ["scripts"]; }), /must not enable scripts/],
+    "Scripts:v1": [withSpec((s) => { s.features.enabled = ["Scripts:v1"]; }), /must not enable Scripts:v1/],
+    "preview": [withSpec((s) => { s.features.enabled = ["preview"]; }), /must not enable preview/],
+    "token-exchange": [withSpec((s) => { s.features.enabled = ["token-exchange"]; }), /must not enable token-exchange/],
+    "token-exchange:v1": [withSpec((s) => { s.features.enabled = ["token-exchange:v1"]; }), /must not enable token-exchange:v1/],
+    "option features": [withSpec((s) => { s.additionalOptions.push({ name: "features", value: "scripts" }); }), /additional option features sets features/],
+    "env KC_FEATURES": [withSpec((s) => { s.env = [{ name: "KC_FEATURES", value: "scripts" }]; }), /spec env KC_FEATURES sets features/],
+    "pod env KC_FEATURES": [withSpec((s) => { podContainer(s).env = [{ name: "KC_FEATURES", value: "scripts" }]; }), /podTemplate containers\[0\] env KC_FEATURES/],
+    "pod container image": [withSpec((s) => { podContainer(s).image = "example/keycloak-with-scripts:1"; }), /podTemplate containers\[0\] image/],
+    "mount at providers": [withSpec((s) => { podContainer(s).volumeMounts.push({ name: "jars", mountPath: "/opt/keycloak/providers" }); }), /mount at \/opt\/keycloak\/providers reaches/],
+    "mount of one jar": [withSpec((s) => { podContainer(s).volumeMounts.push({ name: "jars", mountPath: "/opt/keycloak/providers/aud.jar", subPath: "aud.jar" }); }), /mount at \/opt\/keycloak\/providers\/aud\.jar reaches/],
+    "mount over /opt/keycloak": [withSpec((s) => { podContainer(s).volumeMounts.push({ name: "jars", mountPath: "/opt/keycloak/" }); }), /mount at \/opt\/keycloak\/ reaches/],
+    "init container filling providers": [withSpec((s) => { s.unsupported.podTemplate.spec.initContainers = [{ name: "fetch", image: "busybox", volumeMounts: [{ name: "jars", mountPath: "/opt/keycloak/providers" }] }]; }), /initContainers\[0\] mount at \/opt\/keycloak\/providers/]
+  };
+  const missed = [];
+  for (const [name, [kc, expected]] of Object.entries(cases)) {
+    const problems = providerProblems(kc);
+    if (!problems.some((p) => expected.test(p))) missed.push(`${name}: expected a problem matching ${expected}, got ${JSON.stringify(problems)}`);
+  }
+  assert.deepEqual(missed, []);
+  // Not refused: a feature that is neither scripts nor legacy token exchange.
+  assert.deepEqual(providerProblems(withSpec((s) => { s.features.enabled = ["token-exchange-standard:v2"]; })), []);
+});
+
+
 // kustomize selects the resources a patch applies to by the target's group,
 // version, kind, name and namespace, each an anchored regular expression
 // (api/types/selector.go), and by label and annotation selectors. A target
@@ -360,9 +429,13 @@ const IDENTITY_ENVIRONMENT_ID = { group: "", version: "v1", kind: "ConfigMap", n
 // Those two replacements, with no options, are the only way into spec.db;
 // "every overlay feeds spec.db a plain host and database name" checks the
 // values they copy.
+// Also the CR's image and features, which decide the mappers Keycloak can
+// load (providerProblems).
+const DATABASE_TLS = "the database TLS settings";
 const PROTECTED = [
-  { id: KEYCLOAK_ID, label: "the Keycloak CR", paths: PROTECTED_CR_PATHS, allowed: ["/spec/db/poolInitialSize", "/spec/db/poolMinSize", "/spec/db/poolMaxSize"] },
-  { id: IDENTITY_ENVIRONMENT_ID, label: `ConfigMap ${IDENTITY_ENVIRONMENT}`, paths: ["/data/databaseHost", "/data/databaseName"], allowed: [] }
+  { id: KEYCLOAK_ID, label: "the Keycloak CR", paths: PROTECTED_CR_PATHS, allowed: ["/spec/db/poolInitialSize", "/spec/db/poolMinSize", "/spec/db/poolMaxSize"], concern: DATABASE_TLS },
+  { id: KEYCLOAK_ID, label: "the Keycloak CR", paths: ["/spec/image", "/spec/features"], allowed: [], concern: "the image or features (stock mappers only)" },
+  { id: IDENTITY_ENVIRONMENT_ID, label: `ConfigMap ${IDENTITY_ENVIRONMENT}`, paths: ["/data/databaseHost", "/data/databaseName"], allowed: [], concern: DATABASE_TLS }
 ];
 const touches = (p, { paths, allowed }) =>
   !allowed.includes(p) && (p === "" || p === "/" || paths.some((x) => p === x || p.startsWith(`${x}/`) || x.startsWith(`${p.replace(/\/$/, "")}/`)));
@@ -430,7 +503,7 @@ function kustomizationPatchProblems(k, load) {
         if (!targetMaySelect(patch.target, rule.id)) continue;
         for (const op of docs[0]) {
           for (const p of [op.path, op.from].filter((x) => x !== undefined)) {
-            if (touches(p, rule)) problems.push(`patch ${op.op} ${p} on ${rule.label} touches the database TLS settings`);
+            if (touches(p, rule)) problems.push(`patch ${op.op} ${p} on ${rule.label} touches ${rule.concern}`);
           }
         }
       }
@@ -457,7 +530,7 @@ function kustomizationPatchProblems(k, load) {
           if (!replacementMaySelect(t.select, rule.id)) continue;
           for (const fp of t.fieldPaths || []) {
             const p = `/${fp.replace(/\./g, "/")}`;
-            if (touches(p, rule) && !isEnvironmentDatabaseReplacement(x, t, fp)) problems.push(`replacement into ${fp} of ${rule.label} touches the database TLS settings`);
+            if (touches(p, rule) && !isEnvironmentDatabaseReplacement(x, t, fp)) problems.push(`replacement into ${fp} of ${rule.label} touches ${rule.concern}`);
           }
         }
       }
@@ -536,7 +609,12 @@ test("the patch check finds every patch, replacement and transformer that can re
     "SMP on identity-environment databaseHost": { patches: [{ patch: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: identity-environment\ndata:\n  databaseHost: writer.example?\n" }] },
     "replacement into identity-environment databaseName": { replacements: [{ source: { kind: "ConfigMap", name: "other", fieldPath: "data.x" }, targets: [{ select: { kind: "ConfigMap", name: "identity-environment" }, fieldPaths: ["data.databaseName"] }] }] },
     "configMapGenerator merging into identity-environment": { configMapGenerator: [{ name: "identity-environment", behavior: "merge", literals: ["databaseName=db?"] }] },
-    "a generators entry": { generators: ["generator.yaml"] }
+    "a generators entry": { generators: ["generator.yaml"] },
+    // The image and the features decide which mappers Keycloak can load.
+    "JSON patch on spec.image": { patches: [{ target: { kind: "Keycloak", name: "keycloak" }, patch: "- op: replace\n  path: /spec/image\n  value: example/keycloak:1\n" }] },
+    "JSON patch adding an enabled feature": { patches: [{ target: { kind: "Keycloak" }, patch: "- op: add\n  path: /spec/features/enabled\n  value: [scripts]\n" }] },
+    "SMP enabling a feature": { patches: [{ patch: smp("  features:\n    enabled: [scripts]\n") }] },
+    "replacement into spec.image": { replacements: [{ source: { kind: "ConfigMap", name: "x", fieldPath: "data.y" }, targets: [{ select: { kind: "Keycloak", name: "keycloak" }, fieldPaths: ["spec.image"] }] }] }
   };
   const environmentComponent = YAML.parse(fs.readFileSync(path.join(root, "deploy/kustomize/components/environment/kustomization.yaml"), "utf8"));
   const clean = {
@@ -638,7 +716,7 @@ test("the Keycloak package mentions sslmode and sslrootcert exactly once (the CR
 // skipping. This is the check that decides: the static patch check above
 // reads patches, replacements and the CR source without applying them, and
 // in the realm job's npm test (no kustomize) it is the only overlay check.
-test("every overlay renders exactly one sslmode=verify-full with the mounted RDS CA bundle", (t) => {
+test("every overlay renders exactly one sslmode=verify-full with the mounted RDS CA bundle, and the stock image without providers", (t) => {
   const probe = spawnSync("kustomize", ["version"], { encoding: "utf8" });
   if (probe.error) {
     assert.notEqual(process.env.FBX_REQUIRE_KUSTOMIZE, "1", "FBX_REQUIRE_KUSTOMIZE=1 but kustomize is not on PATH");
@@ -652,6 +730,7 @@ test("every overlay renders exactly one sslmode=verify-full with the mounted RDS
     assert.equal(keycloaks.length, 1, `${overlay} renders one Keycloak CR`);
     assert.deepEqual(databaseTlsProblems(keycloaks[0]), [], overlay);
     assert.equal(rdsCaPath(keycloaks[0]), "/etc/fintechbankx/rds-ca/global-bundle.pem", overlay);
+    assert.deepEqual(providerProblems(keycloaks[0]), [], overlay);
   }
 });
 

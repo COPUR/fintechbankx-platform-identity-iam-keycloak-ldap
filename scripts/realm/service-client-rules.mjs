@@ -16,6 +16,9 @@
 // - an oidc-audience-mapper naming it (client or custom audience) on any
 //   client, or in any client scope but aud-<callee> (realm default scopes
 //   included);
+// - on any client or client scope, a protocol mapper that is not a stock
+//   Keycloak mapper (STOCK_PROTOCOL_MAPPERS below: script and custom SPI
+//   mappers can write any claim);
 // - on any client or client scope, any mapper whose claim.name, read as a
 //   Keycloak claim path (claimPath below), starts with aud (this realm sets
 //   audiences only through oidc-audience-mapper);
@@ -105,6 +108,28 @@ const otherAudienceRoutes = (m, scopedCallees, holderClientId) => {
   }
   return out;
 };
+
+// The protocol mapper provider ids of a stock Keycloak 26.7.5 (GET
+// /admin/serverinfo, protocolMapperTypes for openid-connect and saml, read
+// from a local 26.7.5 server with default features). A script mapper
+// (script-<file>.js, from a deployed script provider) or a custom SPI mapper
+// can write any claim, aud included, so any other provider id is refused on
+// every client and client scope (built-in ones included).
+export const STOCK_PROTOCOL_MAPPERS = {
+  "openid-connect": ["oidc-acr-mapper", "oidc-address-mapper", "oidc-allowed-origins-mapper", "oidc-amr-mapper", "oidc-audience-mapper",
+    "oidc-audience-resolve-mapper", "oidc-claims-param-token-mapper", "oidc-claims-param-value-idtoken-mapper", "oidc-full-name-mapper",
+    "oidc-group-membership-mapper", "oidc-hardcoded-claim-mapper", "oidc-hardcoded-role-mapper", "oidc-nonce-backwards-compatible-mapper",
+    "oidc-organization-group-membership-mapper", "oidc-organization-membership-mapper", "oidc-role-name-mapper", "oidc-session-state-mapper",
+    "oidc-sha256-pairwise-sub-mapper", "oidc-sub-mapper", "oidc-usermodel-attribute-mapper", "oidc-usermodel-client-role-mapper",
+    "oidc-usermodel-property-mapper", "oidc-usermodel-realm-role-mapper", "oidc-usersessionmodel-note-mapper"],
+  saml: ["saml-audience-mapper", "saml-audience-resolve-mapper", "saml-authn-context-class-ref-mapper", "saml-group-membership-mapper",
+    "saml-hardcode-attribute-mapper", "saml-hardcode-role-mapper", "saml-organization-group-membership-mapper",
+    "saml-organization-membership-mapper", "saml-role-list-mapper", "saml-role-name-mapper", "saml-user-attribute-mapper",
+    "saml-user-attribute-nameid-mapper", "saml-user-property-mapper", "saml-user-session-note-mapper"]
+};
+const STOCK_MAPPER_IDS = new Set(Object.values(STOCK_PROTOCOL_MAPPERS).flat());
+const notStockMapper = (m) => (STOCK_MAPPER_IDS.has(m.protocolMapper) ? []
+  : [`mapper ${m.name} (${m.protocolMapper}) is not a stock Keycloak 26.7.5 protocol mapper; script and custom SPI mappers can write any claim, aud included`]);
 
 // Keycloak's built-in admin clients: created with fullScopeAllowed=true and
 // lightweight access tokens, which carry no aud. Exempt from the role-scope
@@ -256,11 +281,12 @@ export function serviceClientErrors(realm, registry) {
   }
 
   // Other audience routes on every client and client scope (realm default
-  // scopes included): a mapper writing claim aud, a hardcoded or renamed
-  // client role of a by-scope callee (except on the callee's own client).
+  // scopes included): a mapper that is not a stock Keycloak mapper, a mapper
+  // writing claim aud, a hardcoded or renamed client role of a by-scope
+  // callee (except on the callee's own client).
   for (const [label, holder, holderClientId] of [...[...clients.values()].map((c) => [c.clientId, c, c.clientId]), ...[...scopes.values()].map((s) => [`client scope ${s.name}`, s, undefined])]) {
     for (const m of holder.protocolMappers || []) {
-      for (const r of otherAudienceRoutes(m, scopedCallees, holderClientId)) err(`${label}: ${r}`);
+      for (const r of [...notStockMapper(m), ...otherAudienceRoutes(m, scopedCallees, holderClientId)]) err(`${label}: ${r}`);
     }
   }
 

@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as realmCheck from "../../ci/check-realm.mjs";
+import { STOCK_PROTOCOL_MAPPERS } from "../../realm/service-client-rules.mjs";
 const { checkRealm, loadFromRepo, secretEnvName } = realmCheck;
 const tppClientErrors = (...args) => realmCheck.tppClientErrors(...args);
 
@@ -1260,5 +1261,38 @@ test("live: ledger client roles in a role scope, the same through the admin API 
     live.roles.client[LEDGER] = [{ name: "ledger-reader", composite: false, clientRole: true }];
     mutate(live);
     assert.deepEqual(await liveErrors(live), expected, name);
+  }
+});
+
+// Known gap (1), closed: a script mapper (provider id script-<file>.js, from a
+// deployed script provider) or a custom SPI mapper can write any claim, aud
+// included. Every protocol mapper on a client or client scope (Keycloak's
+// built-ins included) must be a stock Keycloak 26.7.5 mapper, in all three
+// modes. The list is GET /admin/serverinfo protocolMapperTypes of a local
+// Keycloak 26.7.5 (openid-connect 24, saml 14).
+const scriptMapper = (protocolMapper) => ({ name: "scripted", protocol: "openid-connect", protocolMapper, consentRequired: false, config: { "claim.name": "x", "access.token.claim": "true" } });
+const notStock = (holder, m) => `${holder}: mapper ${m.name} (${m.protocolMapper}) is not a stock Keycloak 26.7.5 protocol mapper; script and custom SPI mappers can write any claim, aud included`;
+const NOT_STOCK = ["script-aud.js", "script-mappers/aud.js", "fbx-custom-audience-mapper", "docker-v2-allow-all-mapper", "OIDC-AUDIENCE-MAPPER", ""];
+
+test("stock protocol mappers only: script and custom SPI mappers are refused on every client and client scope, in all three modes", async () => {
+  assert.equal(STOCK_PROTOCOL_MAPPERS["openid-connect"].length, 24);
+  assert.equal(STOCK_PROTOCOL_MAPPERS.saml.length, 14);
+  // Every stock mapper passes (in a client scope no client uses).
+  const all = fresh();
+  all.realm.clientScopes.push({ name: "all-stock", protocol: "openid-connect", attributes: {},
+    protocolMappers: Object.values(STOCK_PROTOCOL_MAPPERS).flat().map((protocolMapper) => ({ name: `stock ${protocolMapper}`, protocolMapper, config: {} })) });
+  assert.deepEqual(checkRealm(all), []);
+  for (const id of NOT_STOCK) {
+    const m = scriptMapper(id);
+    for (const [label, holderOf] of [["svc-cus-profile-kyc", (i) => client(i, "svc-cus-profile-kyc")], ["client scope customer-id", (i) => scope(i, "customer-id")]]) {
+      const input = fresh();
+      holderOf(input).protocolMappers.push(structuredClone(m));
+      assert.deepEqual(checkRealm(input), [notStock(label, m)], `${label} ${id}`);
+    }
+    for (const [label, holderOf] of [["svc-cus-profile-kyc", (l) => liveClient(l, "svc-cus-profile-kyc")], ["admin-cli", (l) => liveClient(l, "admin-cli")], ["client scope roles", (l) => liveScope(l, "roles")], ["client scope customer-id", (l) => liveScope(l, "customer-id")]]) {
+      const live = liveRealm();
+      holderOf(live).protocolMappers.push(structuredClone(m));
+      assert.deepEqual(await liveErrors(live), [notStock(label, m)], `live ${label} ${id}`);
+    }
   }
 });
