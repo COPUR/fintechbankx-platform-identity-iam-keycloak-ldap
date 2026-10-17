@@ -68,6 +68,9 @@ test("the Keycloak database connection verifies the server certificate", () => {
 // - pod template args or command (CLI options such as --db-url), envFrom
 //   (its variables are not visible here) and mounts over /opt/keycloak/conf
 //   (keycloak.conf);
+// - a workingDir on the Keycloak container, and any mount there but the RDS
+//   CA bundle outside /opt/keycloak (keycloakContainerFileProblems: .env and
+//   config/application.properties in the working directory);
 // - a jdbc: URL anywhere in the CR.
 const RDS_CA_CONFIGMAP = "rds-ca-bundle";
 const RDS_CA_KEY = "global-bundle.pem";
@@ -90,23 +93,49 @@ const PROTECTED_CR_PATHS = ["/spec/additionalOptions", "/spec/unsupported", "/sp
 // read the text Java gets. The java launcher reads a token that starts with
 // @ (on the command line kc.sh builds, and in JDK_JAVA_OPTIONS) as a file of
 // more arguments, which can set -Dkc.db-url or -Dkc.features; no value of
-// these variables may contain @ at all (javaArgfileProblems; this check and
+// these variables may contain @ at all (javaArgumentProblems; this check and
 // the provider check). The same function refuses the options known to load
 // more options from a file: the JVM's -XX:VMOptionsFile and -XX:Flags, and
 // the -Dsmallrye.config.locations and -Dquarkus.config.locations properties
 // Keycloak's Quarkus configuration reads (a file there can set kc.features or
-// kc.db-url). This is a list of known routes, not proof that no other JVM or
-// Quarkus option reads settings from a file.
+// kc.db-url), and the options that load code from a file (a Java or native
+// agent, the boot class path, a patched module, a system class loader), which
+// can register providers or rewrite Keycloak's classes. kc.sh adds
+// -agentlib:jdwp itself when KC_DEBUG or DEBUG is "true" (a debugger port
+// runs code it is sent), so those two may only be "false". This is a list of
+// known routes, not proof that no other JVM or Quarkus option reads settings
+// or code from a file.
 const JAVA_ARGS_ENV = /^(JAVA|JAVA_HOME|JAVA_OPTS.*|JAVA_ADD_OPENS|JAVA_LOCALE|(KC_)?DEBUG(_PORT|_SUSPEND)?|JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS)$/;
 const OPTION_FILE_LOADERS = ["-XX:VMOptionsFile", "-XX:Flags", "-Dsmallrye.config.locations", "-Dquarkus.config.locations"];
-const javaArgfileProblems = (where, e) => {
+const CODE_FILE_LOADERS = ["-javaagent:", "-agentpath:", "-agentlib:", "-Xbootclasspath", "--patch-module", "-Djava.system.class.loader"];
+const javaArgumentProblems = (where, e) => {
   if (!JAVA_ARGS_ENV.test(envForm(e.name))) return [];
   const value = String(e.value ?? "");
+  const has = (o) => value.toLowerCase().includes(o.toLowerCase());
   return [
     ...(value.includes("@") ? [`${where} ${e.name} contains "@": the java launcher reads a token starting with @ as a file of more arguments, which this check cannot read`] : []),
-    ...OPTION_FILE_LOADERS.filter((o) => value.toLowerCase().includes(o.toLowerCase())).map((o) => `${where} ${e.name} loads options from a file (${o}), which this check cannot read`)
+    ...OPTION_FILE_LOADERS.filter(has).map((o) => `${where} ${e.name} loads options from a file (${o}), which this check cannot read`),
+    ...CODE_FILE_LOADERS.filter(has).map((o) => `${where} ${e.name} loads code from a file (${o}), which this check cannot read`),
+    ...(/^(KC_)?DEBUG$/.test(envForm(e.name)) && e.value !== "false" ? [`${where} ${e.name} is ${JSON.stringify(e.value)}: kc.sh then adds -agentlib:jdwp, a debugger port that runs code it is sent; only "false" is allowed`] : [])
   ];
 };
+
+// Keycloak reads .env and config/application.properties from its working
+// directory (/opt/keycloak in the stock image), and either file can set
+// kc.features or kc.db-url. The Keycloak container (the first pod template
+// container) may not set workingDir, and its only mount is the RDS CA bundle
+// ConfigMap, outside /opt/keycloak. Both checks apply this.
+const KEYCLOAK_HOME = "/opt/keycloak";
+function keycloakContainerFileProblems(pod) {
+  const c = pod?.containers?.[0] || {};
+  const problems = [];
+  if (c.workingDir !== undefined) problems.push(`podTemplate containers[0] workingDir ${c.workingDir}: Keycloak reads .env and config/application.properties from its working directory, and either can set kc.features or kc.db-url`);
+  const caVolumes = new Set((pod?.volumes || []).filter((v) => v.configMap?.name === RDS_CA_CONFIGMAP).map((v) => v.name));
+  for (const m of c.volumeMounts || []) {
+    if (!caVolumes.has(m.name) || pathsOverlap(m.mountPath, KEYCLOAK_HOME)) problems.push(`podTemplate containers[0] mount ${m.name} at ${m.mountPath}: the Keycloak container may mount only the RDS CA bundle, outside ${KEYCLOAK_HOME} (Keycloak reads configuration and providers from files there and in its working directory)`);
+  }
+  return problems;
+}
 
 // Env names the Keycloak container may set, matched case-sensitively as Linux
 // does: Keycloak options (KC_*, checked above as database options and config
@@ -210,9 +239,10 @@ function databaseTlsProblems(kc) {
         else if (target === "KC_CONFIG_FILE") problems.push(`${where} ${e.name} maps KC_${env.slice(6)} to ${literal}, another configuration file`);
       }
       if (literal !== undefined && /-D(kc|quarkus)\./i.test(literal)) problems.push(`${where} ${e.name} sets a kc. or quarkus. system property`);
-      problems.push(...javaArgfileProblems(where, e));
+      problems.push(...javaArgumentProblems(where, e));
     }
   }
+  problems.push(...keycloakContainerFileProblems(pod));
   const keycloakContainer = pod?.containers?.[0] || {};
   if ((keycloakContainer.args || []).length) problems.push("podTemplate args replace the operator's start command, and CLI options such as --db-url take precedence over the CR's options");
   if ((keycloakContainer.command || []).length) problems.push("podTemplate command replaces the operator's start command");
@@ -336,6 +366,20 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
     "-XX:Flags in JDK_JAVA_OPTIONS": [(kc) => { pod(kc).containers[0].env = [{ name: "JDK_JAVA_OPTIONS", value: "-XX:Flags=/opt/keycloak/data/db.flags" }]; }, /podTemplate containers\[0\]\.env JDK_JAVA_OPTIONS loads options from a file \(-XX:Flags\)/],
     "-Dsmallrye.config.locations in JAVA_OPTS": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS", value: "-Dsmallrye.config.locations=/opt/keycloak/data/db.properties" }]; }, /spec\.env JAVA_OPTS loads options from a file \(-Dsmallrye\.config\.locations\)/],
     "-Dquarkus.config.locations in JAVA_TOOL_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JAVA_TOOL_OPTIONS", value: "-Dquarkus.config.locations=/opt/keycloak/data/db.properties" }]; }, /spec\.env JAVA_TOOL_OPTIONS loads options from a file \(-Dquarkus\.config\.locations\)/],
+    // Keycloak reads .env and config/application.properties from its working
+    // directory; either can set kc.db-url.
+    "a workingDir holding a mounted ConfigMap": [(kc) => { pod(kc).containers[0].workingDir = "/opt/fbx-cfg"; pod(kc).containers[0].volumeMounts.push({ name: "cfg", mountPath: "/opt/fbx-cfg" }); }, /podTemplate containers\[0\] workingDir \/opt\/fbx-cfg: Keycloak reads \.env/],
+    "a .env file mounted into /opt/keycloak": [(kc) => { pod(kc).containers[0].volumeMounts.push({ name: "cfg", mountPath: "/opt/keycloak/.env", subPath: ".env" }); }, /podTemplate containers\[0\] mount cfg at \/opt\/keycloak\/\.env: the Keycloak container may mount only the RDS CA bundle/],
+    "a config directory mounted at /config": [(kc) => { pod(kc).containers[0].volumeMounts.push({ name: "cfg", mountPath: "/config" }); }, /podTemplate containers\[0\] mount cfg at \/config: the Keycloak container may mount only the RDS CA bundle/],
+    "another ConfigMap mounted outside /opt/keycloak": [(kc) => { pod(kc).volumes.push({ name: "extra", configMap: { name: "extra" } }); pod(kc).containers[0].volumeMounts.push({ name: "extra", mountPath: "/etc/fintechbankx/extra" }); }, /mount extra at \/etc\/fintechbankx\/extra: the Keycloak container may mount only the RDS CA bundle/],
+    "the RDS CA bundle mounted inside /opt/keycloak": [(kc) => { pod(kc).containers[0].volumeMounts[0].mountPath = "/opt/keycloak/config"; }, /mount database-ca at \/opt\/keycloak\/config: the Keycloak container may mount only the RDS CA bundle, outside \/opt\/keycloak/],
+    // Code the JVM loads from a file, and the debugger kc.sh adds in debug mode.
+    "-javaagent in JAVA_OPTS_APPEND": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-javaagent:/opt/extra/agent.jar" }]; }, /spec\.env JAVA_OPTS_APPEND loads code from a file \(-javaagent:\)/],
+    "-agentpath in JDK_JAVA_OPTIONS": [(kc) => { pod(kc).containers[0].env = [{ name: "JDK_JAVA_OPTIONS", value: "-agentpath:/opt/extra/libagent.so" }]; }, /JDK_JAVA_OPTIONS loads code from a file \(-agentpath:\)/],
+    "-Xbootclasspath/a: in JAVA_TOOL_OPTIONS": [(kc) => { kc.spec.env = [{ name: "JAVA_TOOL_OPTIONS", value: "-Xbootclasspath/a:/opt/extra/boot.jar" }]; }, /JAVA_TOOL_OPTIONS loads code from a file \(-Xbootclasspath\)/],
+    "-agentlib:jdwp in JAVA_OPTS": [(kc) => { kc.spec.env = [{ name: "JAVA_OPTS", value: "-agentlib:jdwp=transport=dt_socket,address=*:8787,server=y,suspend=n" }]; }, /spec\.env JAVA_OPTS loads code from a file \(-agentlib:\)/],
+    "KC_DEBUG true": [(kc) => { kc.spec.env = [{ name: "KC_DEBUG", value: "true" }]; }, /spec\.env KC_DEBUG is "true": kc\.sh then adds -agentlib:jdwp/],
+    "DEBUG from a Secret": [(kc) => { pod(kc).containers[0].env = [{ name: "DEBUG", valueFrom: { secretKeyRef: { name: "x", key: "y" } } }]; }, /podTemplate containers\[0\]\.env DEBUG is undefined: kc\.sh then adds -agentlib:jdwp/],
     // kc.sh never initialises result or CONFIG_ARGS, so their environment
     // values reach the java command line through eval; any name outside the
     // allow-list is refused rather than modelled one by one.
@@ -348,6 +392,9 @@ test("the database TLS check rejects anything but one sslmode=verify-full with t
   const plain = structuredClone(cr);
   plain.spec.env = [{ name: "JAVA_OPTS_APPEND", value: "-XX:+UseZGC -Dfile.encoding=UTF-8" }, { name: "KC_FOO", value: "info" }, { name: "KCKEY_FOO", value: "log-level" }];
   assert.deepEqual(databaseTlsProblems(plain), []);
+  const debugOff = structuredClone(cr);
+  debugOff.spec.env = [{ name: "KC_DEBUG", value: "false" }];
+  assert.deepEqual(databaseTlsProblems(debugOff), []);
   const missed = [];
   for (const [name, [mutate, expected]] of Object.entries(cases)) {
     const kc = structuredClone(cr);
@@ -393,8 +440,11 @@ const overlays = fs.readdirSync(path.join(root, "deploy/kustomize/overlays"));
 // non-empty args (it sets "--verbose start" only when they are empty) and
 // both can set features or fetch a provider jar. The pod template may not
 // replace the image. A java argument variable may not name an option that
-// loads more options from a file (OPTION_FILE_LOADERS); that list holds the
-// known routes only.
+// loads more options or code from a file (OPTION_FILE_LOADERS,
+// CODE_FILE_LOADERS) or turn on debug mode; those lists hold the known routes
+// only. The Keycloak container sets no workingDir and mounts only the RDS CA
+// bundle, outside /opt/keycloak (keycloakContainerFileProblems), so no .env
+// or config/application.properties reaches its working directory.
 const STOCK_IMAGE = "quay.io/keycloak/keycloak:26.7.5";
 const PROVIDERS_DIR = "/opt/keycloak/providers";
 const ENABLED_FEATURES = /^token-exchange-standard(:v\d+)?$/;
@@ -411,12 +461,13 @@ function providerProblems(kc) {
   const keycloakContainer = pod?.containers?.[0] || {};
   for (const f of ["args", "command"]) if ((keycloakContainer[f] || []).length) problems.push(`podTemplate containers[0] ${f} can set features or fetch a provider jar into ${PROVIDERS_DIR}`);
   if (keycloakContainer.envFrom !== undefined) problems.push("podTemplate containers[0] envFrom can set KC_FEATURES, and its variables are not visible to this check");
+  problems.push(...keycloakContainerFileProblems(pod));
   for (const [where, c] of [["spec", { env: kc?.spec?.env }], ...(pod?.containers || []).map((c, i) => [`podTemplate containers[${i}]`, c]), ...(pod?.initContainers || []).map((c, i) => [`podTemplate initContainers[${i}]`, c])]) {
     for (const e of c.env || []) {
       if (envForm(e.name).startsWith("KC_FEATURES")) problems.push(`${where} env ${e.name} sets features outside spec.features`);
       if (envForm(e.name).startsWith("KCKEY_") && `KC_${envForm(e.value)}`.startsWith("KC_FEATURES")) problems.push(`${where} env ${e.name} maps KC_${envForm(e.name).slice(6)} to ${e.value}, which sets features outside spec.features`);
       if (/-Dkc\.features/i.test(String(e.value ?? ""))) problems.push(`${where} env ${e.name} sets features outside spec.features (-Dkc.features)`);
-      problems.push(...javaArgfileProblems(`${where} env`, e));
+      problems.push(...javaArgumentProblems(`${where} env`, e));
     }
     if (c.image !== undefined) problems.push(`${where} image ${c.image} would replace or add to the stock image`);
     for (const m of c.volumeMounts || []) {
@@ -471,7 +522,12 @@ test("the provider check rejects another image, a refused feature and a mount at
     "-XX:VMOptionsFile in JAVA_OPTS_APPEND": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS_APPEND", value: "-XX:VMOptionsFile=/opt/keycloak/data/features.opts" }]; }), /spec env JAVA_OPTS_APPEND loads options from a file \(-XX:VMOptionsFile\)/],
     "-Dsmallrye.config.locations in pod JDK_JAVA_OPTIONS": [withSpec((s) => { podContainer(s).env = [{ name: "JDK_JAVA_OPTIONS", value: "-Dsmallrye.config.locations=/opt/keycloak/data/kc.properties" }]; }), /podTemplate containers\[0\] env JDK_JAVA_OPTIONS loads options from a file \(-Dsmallrye\.config\.locations\)/],
     "-Dquarkus.config.locations in JAVA_OPTS": [withSpec((s) => { s.env = [{ name: "JAVA_OPTS", value: "-Dquarkus.config.locations=/opt/keycloak/data/kc.properties" }]; }), /spec env JAVA_OPTS loads options from a file \(-Dquarkus\.config\.locations\)/],
-    "KCKEY_ env naming features": [withSpec((s) => { s.env = [{ name: "KC_FOO", value: "scripts" }, { name: "KCKEY_FOO", value: "features" }]; }), /spec env KCKEY_FOO maps KC_FOO to features/]
+    "KCKEY_ env naming features": [withSpec((s) => { s.env = [{ name: "KC_FOO", value: "scripts" }, { name: "KCKEY_FOO", value: "features" }]; }), /spec env KCKEY_FOO maps KC_FOO to features/],
+    // A .env or config/application.properties in the working directory can set kc.features.
+    "a workingDir": [withSpec((s) => { podContainer(s).workingDir = "/opt/fbx-cfg"; }), /podTemplate containers\[0\] workingDir \/opt\/fbx-cfg: Keycloak reads \.env/],
+    "a .env mount": [withSpec((s) => { podContainer(s).volumeMounts.push({ name: "cfg", mountPath: "/opt/keycloak/.env", subPath: ".env" }); }), /podTemplate containers\[0\] mount cfg at \/opt\/keycloak\/\.env: the Keycloak container may mount only the RDS CA bundle/],
+    "a java agent mounted elsewhere": [withSpec((s) => { podContainer(s).env = [{ name: "JAVA_OPTS_APPEND", value: "-javaagent:/opt/extra/agent.jar" }]; }), /podTemplate containers\[0\] env JAVA_OPTS_APPEND loads code from a file \(-javaagent:\)/],
+    "debug mode": [withSpec((s) => { s.env = [{ name: "DEBUG", value: "true" }]; }), /spec env DEBUG is "true": kc\.sh then adds -agentlib:jdwp/]
   };
   const missed = [];
   for (const [name, [kc, expected]] of Object.entries(cases)) {

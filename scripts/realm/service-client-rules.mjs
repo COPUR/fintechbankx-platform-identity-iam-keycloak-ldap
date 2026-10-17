@@ -232,8 +232,9 @@ const tokenExchangeErrors = (c) => {
 // svc-acc-accounts-ledger and realm role service. No client of this realm
 // uses it. Keycloak's FGAP v2 client admin-permissions (adminPermissionsEnabled)
 // is the resource server of the admin permissions and keeps it. Keycloak and
-// keycloak-config-cli read the JSON string "true" (any case) as true, so any
-// authorizationServicesEnabled but absent, false or "false" (any case) is
+// keycloak-config-cli read the JSON strings "true", "True", "TRUE" and
+// space-padded forms as true (mixed case such as "tRuE" fails the import), so
+// any authorizationServicesEnabled but absent, false or "false" (any case) is
 // refused.
 export const FGAP_V2_CLIENT = "admin-permissions";
 const authorizationServicesOff = (v) => v === undefined || v === false || (typeof v === "string" && v.toLowerCase() === "false");
