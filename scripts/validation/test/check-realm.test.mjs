@@ -846,6 +846,15 @@ const audClaimMapper = (type = "oidc-hardcoded-claim-mapper", claimName = "aud")
 // not. "aud.x" (a path under aud) did not either, but is refused as well.
 const AUD_SPELLINGS = { "aud.": '["aud"]', "\\aud": '["aud"]', "a\\ud": '["aud"]', "aud.x": '["aud","x"]' };
 const NOT_AUD_SPELLINGS = ["Aud", "aud ", "aud\\", "a\\.ud", "x.aud", "resource_access.aud"];
+// Keycloak's client role mapper (oidc-usermodel-client-role-mapper) replaces
+// ${client_id} in claim.name with the role's client id before reading the claim
+// path: with a client named aud holding a role named svc-acc-accounts-ledger,
+// claim.name "${client_id}" gave svc-cus-profile-kyc's client-credentials token
+// aud=["svc-acc-accounts-ledger"] (Keycloak 26.7.5). Only the built-in form
+// resource_access.${client_id}.roles is allowed.
+const CLIENT_ID_CLAIMS = ["${client_id}", "${client_id}.roles", "x.${client_id}"];
+const clientIdClaimMapper = (claimName) => ({ name: `client-id-claim ${claimName}`, protocol: "openid-connect", protocolMapper: "oidc-usermodel-client-role-mapper", consentRequired: false,
+  config: { "claim.name": claimName, "usermodel.clientRoleMapping.clientId": "aud", multivalued: "true", "access.token.claim": "true" } });
 const hardcodedRole = (role = `${LEDGER}.anything`) => ({ name: "hardcoded-role", protocol: "openid-connect", protocolMapper: "oidc-hardcoded-role-mapper", consentRequired: false, config: { role } });
 const roleName = (to = `${LEDGER}.service`) => ({ name: "role-name", protocol: "openid-connect", protocolMapper: "oidc-role-name-mapper", consentRequired: false, config: { role: "service", "new.role.name": to } });
 const audRouteErrors = (holder, m) => {
@@ -853,17 +862,18 @@ const audRouteErrors = (holder, m) => {
   if (m.protocolMapper === "oidc-hardcoded-role-mapper") return `${holder}: mapper ${m.name} (oidc-hardcoded-role-mapper) adds role ${m.config.role}, a client role of ${LEDGER}, so tokens would carry aud=${LEDGER} (audience resolve); ${via}`;
   if (m.protocolMapper === "oidc-role-name-mapper") return `${holder}: mapper ${m.name} (oidc-role-name-mapper) renames a role to ${m.config["new.role.name"]}, a client role of ${LEDGER}, so tokens would carry aud=${LEDGER} (audience resolve); ${via}`;
   const n = m.config["claim.name"];
+  if (CLIENT_ID_CLAIMS.includes(n)) return `${holder}: mapper ${m.name} (${m.protocolMapper}) has \${client_id} in claim.name ${JSON.stringify(n)}; the client role mapper replaces it with a client id, so a client named aud would write claim aud; only resource_access.\${client_id}.roles is allowed`;
   const how = n === "aud" ? "writes claim aud" : `writes ${AUD_SPELLINGS[n] === '["aud"]' ? "claim" : "under claim"} aud (claim.name ${JSON.stringify(n)}, Keycloak claim path ${AUD_SPELLINGS[n]})`;
   return `${holder}: mapper ${m.name} (${m.protocolMapper}) ${how}; this realm sets audiences only through oidc-audience-mapper`;
 };
-const AUD_ROUTES = [audClaimMapper(), audClaimMapper("oidc-usermodel-attribute-mapper"), ...Object.keys(AUD_SPELLINGS).map((n) => audClaimMapper(undefined, n)), hardcodedRole(), roleName()];
+const AUD_ROUTES = [audClaimMapper(), audClaimMapper("oidc-usermodel-attribute-mapper"), ...Object.keys(AUD_SPELLINGS).map((n) => audClaimMapper(undefined, n)), ...CLIENT_ID_CLAIMS.map(clientIdClaimMapper), hardcodedRole(), roleName()];
 
 test("by-scope audience: an aud claim mapper, a hardcoded ledger role and a role renamed to a ledger role are refused on every client and client scope", () => {
   // The realm file has none of these mappers ("committed realm passes the
   // gate"). Next to each route the holder gets mappers that are no ledger
   // route (a realm role, another client's role, a longer client id), which
   // must not be reported.
-  const harmless = [hardcodedRole("service"), hardcodedRole("svc-cus-profile-kyc.x"), roleName(`${LEDGER}-two.x`), ...NOT_AUD_SPELLINGS.map((n) => audClaimMapper(undefined, n))].map((m, i) => ({ ...m, name: `harmless-${i}` }));
+  const harmless = [hardcodedRole("service"), hardcodedRole("svc-cus-profile-kyc.x"), roleName(`${LEDGER}-two.x`), clientIdClaimMapper("resource_access.${client_id}.roles"), ...NOT_AUD_SPELLINGS.map((n) => audClaimMapper(undefined, n))].map((m, i) => ({ ...m, name: `harmless-${i}` }));
   const holders = [
     ["svc-cus-profile-kyc", (i) => client(i, "svc-cus-profile-kyc")],
     ["svc-ln-loan-lifecycle", (i) => client(i, "svc-ln-loan-lifecycle")],
@@ -1035,7 +1045,8 @@ test("live: drift from the service-client rules fails, through the admin API and
   // and claim names Keycloak does not read as aud.
   const noRoute = [
     ...[hardcodedRole(`${LEDGER}.ledger-reader`), roleName(`${LEDGER}.x`)].map((m) => [`${m.protocolMapper} on ${LEDGER} itself`, (l) => liveClient(l, LEDGER).protocolMappers.push(structuredClone(m))]),
-    ...NOT_AUD_SPELLINGS.map((n) => [`claim.name ${JSON.stringify(n)} on customer-id`, (l) => liveScope(l, "customer-id").protocolMappers.push(audClaimMapper(undefined, n))])
+    ...NOT_AUD_SPELLINGS.map((n) => [`claim.name ${JSON.stringify(n)} on customer-id`, (l) => liveScope(l, "customer-id").protocolMappers.push(audClaimMapper(undefined, n))]),
+    ["client role mapper resource_access.${client_id}.roles on a client", (l) => liveClient(l, "svc-cus-profile-kyc").protocolMappers.push(clientIdClaimMapper("resource_access.${client_id}.roles"))]
   ];
   for (const [name, mutate] of noRoute) {
     const live = liveRealm();

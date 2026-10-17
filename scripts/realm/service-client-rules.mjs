@@ -18,6 +18,10 @@
 // - on any client or client scope, any mapper whose claim.name, read as a
 //   Keycloak claim path (claimPath below), starts with aud (this realm sets
 //   audiences only through oidc-audience-mapper);
+// - on any client or client scope, a mapper with ${client_id} in claim.name
+//   other than the built-in resource_access.${client_id}.roles (the client
+//   role mapper puts a client id there first, so a client named aud would
+//   write claim aud);
 // - on any client but the callee and on any client scope, an
 //   oidc-hardcoded-role-mapper whose role starts with "<callee>.", and an
 //   oidc-role-name-mapper whose new.role.name starts with "<callee>.";
@@ -72,6 +76,12 @@ export function claimPath(name) {
 // holderClientId: the client that holds the mapper (undefined for a client
 // scope). The audience resolve mapper never puts the token's own client into
 // aud, so a callee role on the callee's own client is no route.
+// Keycloak's client role mapper replaces ${client_id} in claim.name with the
+// role's client id before reading the claim path (26.7.5), so only its
+// built-in claim name may carry the placeholder.
+export const CLIENT_ID_PLACEHOLDER = "${client_id}";
+export const CLIENT_ROLES_CLAIM = "resource_access.${client_id}.roles";
+
 const otherAudienceRoutes = (m, scopedCallees, holderClientId) => {
   const c = m.config || {};
   const out = [];
@@ -81,6 +91,9 @@ const otherAudienceRoutes = (m, scopedCallees, holderClientId) => {
     const how = name === "aud" ? "writes claim aud"
       : `writes ${claim.length === 1 ? "claim" : "under claim"} aud (claim.name ${JSON.stringify(name)}, Keycloak claim path ${JSON.stringify(claim)})`;
     out.push(`mapper ${m.name} (${m.protocolMapper}) ${how}; this realm sets audiences only through ${AUDIENCE_MAPPER}`);
+  }
+  if (m.protocolMapper !== AUDIENCE_MAPPER && typeof name === "string" && name.includes(CLIENT_ID_PLACEHOLDER) && name !== CLIENT_ROLES_CLAIM) {
+    out.push(`mapper ${m.name} (${m.protocolMapper}) has ${CLIENT_ID_PLACEHOLDER} in claim.name ${JSON.stringify(name)}; the client role mapper replaces it with a client id, so a client named aud would write claim aud; only ${CLIENT_ROLES_CLAIM} is allowed`);
   }
   for (const callee of scopedCallees) {
     if (callee === holderClientId) continue;
