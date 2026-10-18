@@ -7,14 +7,20 @@
 # them; each service syncs its own entry with its ExternalSecret.
 #
 # Default is a dry run that only reports what would change. Nothing is
-# printed or logged that contains a credential value.
+# printed or logged that contains a credential value. A generated value only
+# travels on pipes (openssl to jq to aws --secret-string file:///dev/stdin):
+# it is never on a command line, in a shell variable or in a file. Whether a
+# container already has a value comes from describe-secret (an AWSCURRENT
+# version), so the script never reads a secret; it calls only DescribeSecret
+# and PutSecretValue.
 #
 # usage:
 #   scripts/identity/publish-oidc-client-secrets.sh --env dev --issuer https://identity.dev.fintechbankx.example/realms/fintechbankx [--apply] [--rotate] [--only <client-id>]
 #
 #   --apply    write to Secrets Manager (otherwise dry run)
 #   --rotate   replace existing values (default: only fill empty/missing ones)
-#   --only     limit to one client id from realm/service-clients.json (clients or ssoClients)
+#   --only     limit to one client id from realm/service-clients.json (clients or
+#              ssoClients); an id that is not there fails before any AWS call
 #
 # Needs: aws CLI v2 (credentials for the target account), jq, openssl.
 # The secret containers come from deploy/terraform; this script never creates
@@ -37,7 +43,7 @@ while [ $# -gt 0 ]; do
     --apply) APPLY=true; shift ;;
     --rotate) ROTATE=true; shift ;;
     --only) ONLY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -60,6 +66,10 @@ trap 'rm -rf "$WORK"' EXIT
 
 TOKEN_URI="${ISSUER}/protocol/openid-connect/token"
 mapfile -t ROWS < <(jq -r '(.clients + (.ssoClients // []))[] | [.clientId, .serviceSlug] | @tsv' "$REGISTRY")
+if [ -n "$ONLY" ] && ! jq -e --arg id "$ONLY" 'any((.clients + (.ssoClients // []))[]; .clientId == $id)' "$REGISTRY" >/dev/null; then
+  echo "--only ${ONLY}: no such client id in realm/service-clients.json" >&2
+  exit 2
+fi
 
 changed=0
 skipped=0
@@ -71,13 +81,21 @@ for row in "${ROWS[@]}"; do
   fi
   name="${ENVIRONMENT}/${slug}/oidc-client"
 
-  if ! aws secretsmanager describe-secret --secret-id "$name" >/dev/null 2>&1; then
-    echo "MISSING  ${name}: container not found (run deploy/terraform first)" >&2
+  # Only "not found" means the container is missing; any other error (access,
+  # throttling, KMS) stops the run, so a live value is never taken for empty.
+  if ! stages="$(aws secretsmanager describe-secret --secret-id "$name" \
+      --query 'VersionIdsToStages' --output json 2>"$WORK/describe.err")"; then
+    if grep -q 'ResourceNotFoundException' "$WORK/describe.err"; then
+      echo "MISSING  ${name}: container not found (run deploy/terraform first)" >&2
+    else
+      echo "ERROR    ${name}: describe-secret failed: $(tr '\n' ' ' < "$WORK/describe.err")" >&2
+    fi
     exit 1
   fi
 
+  # A value exists when a version carries AWSCURRENT (AWSPENDING alone is not one).
   has_value=false
-  if aws secretsmanager get-secret-value --secret-id "$name" --query 'VersionId' --output text >/dev/null 2>&1; then
+  if printf '%s' "$stages" | jq -e '(. // {}) | any(.[]; index("AWSCURRENT") != null)' >/dev/null; then
     has_value=true
   fi
 
@@ -94,14 +112,12 @@ for row in "${ROWS[@]}"; do
     continue
   fi
 
-  # 48 random bytes, URL-safe, never echoed.
-  value="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')"
-  jq -n --arg id "$client_id" --arg v "$value" --arg iss "$ISSUER" --arg tok "$TOKEN_URI" \
-    '{client_id: $id, client_secret: $v, issuer_uri: $iss, token_uri: $tok}' > "$WORK/payload.json"
-  unset value
-  aws secretsmanager put-secret-value --secret-id "$name" \
-    --secret-string "file://$WORK/payload.json" >/dev/null
-  rm -f "$WORK/payload.json"
+  # 48 random bytes, URL-safe. jq reads them as raw input and aws reads the
+  # JSON from stdin, so the value stays on pipes.
+  openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n' \
+    | jq -cRn --arg id "$client_id" --arg iss "$ISSUER" --arg tok "$TOKEN_URI" \
+        '{client_id: $id, client_secret: input, issuer_uri: $iss, token_uri: $tok}' \
+    | aws secretsmanager put-secret-value --secret-id "$name" --secret-string file:///dev/stdin >/dev/null
   echo "${action}      ${name} (${client_id})"
   changed=$((changed + 1))
 done

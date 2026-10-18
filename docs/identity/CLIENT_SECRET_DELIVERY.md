@@ -16,7 +16,7 @@ Every service authenticates to Keycloak with client credentials, and staff tools
    scripts/identity/publish-oidc-client-secrets.sh --env dev --issuer ... --apply  # fill empty ones
    ```
 
-   It generates 48 random bytes per client with `openssl`, writes them through a private temporary file, and never prints a value. Existing values are kept unless `--rotate` is given.
+   It generates 48 random bytes per client with `openssl` and passes them on pipes only: `jq` reads them as raw input and `aws` reads the JSON with `--secret-string file:///dev/stdin`, so a value is never on a command line, in a shell variable or in a file, and is never printed. Whether a container already has a value comes from `describe-secret` (a version with the `AWSCURRENT` stage), so the script needs only `secretsmanager:DescribeSecret` and `secretsmanager:PutSecretValue` and never reads a secret. Existing values are kept unless `--rotate` is given. Only `ResourceNotFoundException` counts as a missing container; any other error (access, throttling, KMS) stops the run, so a live value is never taken for empty. `--only` must name a client id in the registry, or the script fails before any AWS call.
 3. The realm import Job reads the same entries (ExternalSecret `keycloak-realm-import`) and sets them as the client credentials in Keycloak.
 4. Each service syncs its own entry with an ExternalSecret (ClusterSecretStore `aws-secrets-manager`, `remoteRef.key: <env>/<service-slug>/oidc-client`, properties `client_id`, `client_secret`) and uses `token_uri` for the client-credentials grant.
 
