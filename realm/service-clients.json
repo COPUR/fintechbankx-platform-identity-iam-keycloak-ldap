@@ -16,7 +16,7 @@
       "audienceProvenance": {
         "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08 (CustomerProfileHttpAdapter)",
         "svc-acc-accounts-ledger": "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)",
-        "svc-rsk-decisioning": "confirmed by CRC screening-facts plan 2026-10-18 (owner's answer \"Risk decides\": loan enforces risk's POST /api/v1/risk/loan-eligibility)"
+        "svc-rsk-decisioning": "confirmed by CRC screening-facts plan 2026-10-18 (owner's answer \"Risk decides\": loan enforces risk's POST /api/v1/risk/loan-eligibility; risk SERVICE_CALLERS_ELIGIBILITY)"
       }
     },
     {
@@ -104,7 +104,7 @@
         "svc-cus-profile-kyc"
       ],
       "audienceProvenance": {
-        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (risk reads GET /api/v1/customers/{id}/credit for loan eligibility; customer SERVICE_CALLERS)"
+        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (risk reads GET /api/v1/customers/{id}/credit-standing for loan eligibility; customer SERVICE_CALLERS_CREDIT_STANDING)"
       }
     },
     {
@@ -118,7 +118,7 @@
         "svc-cus-profile-kyc"
       ],
       "audienceProvenance": {
-        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (compliance reads GET /api/v1/customers/{id}, name and KYC status, and GET /api/v1/customers/{id}/kyc-status, for sanctions and PEP screening; customer SERVICE_CALLERS_PROFILE and SERVICE_CALLERS_KYC)"
+        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (compliance reads GET /api/v1/customers/{id}/screening-profile, name and KYC status, for sanctions and PEP screening; customer SERVICE_CALLERS_SCREENING)"
       }
     },
     {
