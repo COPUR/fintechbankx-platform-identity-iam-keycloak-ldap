@@ -103,10 +103,25 @@ test("B-1: --apply sends the secret through stdin only; no argv and no file carr
 
 test("B-1: the script holds the secret in no shell variable, jq argument or payload file", () => {
   const src = readFileSync(SCRIPT, "utf8").split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
-  assert.doesNotMatch(src, /--arg\s+v\b/);
   assert.doesNotMatch(src, /payload/);
-  assert.doesNotMatch(src, /value="\$\(openssl/);
+  assert.doesNotMatch(src, /=\s*"?\$\(\s*openssl/, "openssl output is captured in a variable");
   assert.match(src, /--secret-string file:\/\/\/dev\/stdin/);
+  // S-4: every value jq takes from outside comes through --arg with one of these names; no
+  // --argjson, --rawfile, --slurpfile, --args or --jsonargs, which could carry the secret instead.
+  const injected = [...src.matchAll(/--(arg|argjson|rawfile|slurpfile|args|jsonargs)\b(?:\s+(\S+))?/g)].map((m) => `--${m[1]} ${m[2] ?? ""}`.trim());
+  assert.ok(injected.length > 0, "the guard found no jq arguments; it reads the wrong file");
+  for (const opt of injected) {
+    assert.match(opt, /^--arg (id|iss|tok)$/, `jq takes a value through ${opt}`);
+  }
+});
+
+test("S-3: --only with an empty or missing value fails before any AWS call", () => {
+  for (const args of [["--apply", "--only", ""], ["--apply", "--only"]]) {
+    const r = run(args, "empty");
+    assert.equal(r.status, 2, `${JSON.stringify(args)}: ${r.stderr}`);
+    assert.equal(r.argv, "", "aws was called");
+    assert.match(r.stderr, /--only needs a client id/);
+  }
 });
 
 test("S-1: a value is detected from describe-secret, so an unreadable live secret is kept, not overwritten", () => {

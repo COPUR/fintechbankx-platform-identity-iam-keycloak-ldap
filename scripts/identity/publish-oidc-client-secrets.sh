@@ -42,7 +42,10 @@ while [ $# -gt 0 ]; do
     --issuer) ISSUER="$2"; shift 2 ;;
     --apply) APPLY=true; shift ;;
     --rotate) ROTATE=true; shift ;;
-    --only) ONLY="$2"; shift 2 ;;
+    --only)
+      # An empty value would turn the filter off and process every client (S-3).
+      if [ $# -lt 2 ] || [ -z "$2" ]; then echo "--only needs a client id" >&2; exit 2; fi
+      ONLY="$2"; shift 2 ;;
     -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
