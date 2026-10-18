@@ -147,15 +147,16 @@ test("README.md counts every service client of the registry", () => {
   for (const n of counts) assert.equal(n, registry.clients.length, "README.md service client count");
 });
 
-// Who can obtain staff web's ledger audience: only users with a staff role
-// (DevSecOps 2026-10-17): staff web's browser flow fbx-staff-browser denies
-// every other user after sign-in, an SSO session from the customer web client
-// included; the gate checks the flow in all three modes and in the import Job.
-test("REALM_AS_CODE.md says staff web signs in only users with a staff role, and lists gap 5 as checked", () => {
+// Who can obtain staff web's ledger audience: only users who hold a staff
+// role at sign-in (DevSecOps 2026-10-17): staff web's browser flow
+// fbx-staff-browser denies every other user after sign-in, an SSO session
+// from the customer web client included; the gate checks the flow in all
+// three modes and in the import Job.
+test("REALM_AS_CODE.md says staff web signs in only users who hold a staff role at sign-in, and lists gap 5 as checked", () => {
   const ledger = realmDoc.split("\n").find((l) => l.trim().startsWith("The accounts ledger audience reaches"));
   assert.ok(ledger, "no ledger audience paragraph");
   assert.doesNotMatch(ledger, /any realm user, customers included, can sign in/);
-  assert.match(ledger, /only users with a staff role[^.]*`fintechbankx-staff-web`|`fintechbankx-staff-web`[^.]*only users with a staff role/);
+  assert.match(ledger, /only users who hold a staff role at sign-in[^.]*`fintechbankx-staff-web`|`fintechbankx-staff-web`[^.]*only users who hold a staff role at sign-in/);
   assert.match(ledger, /`fbx-staff-browser`/);
   assert.match(ledger, /role scope[^.]*`@PreAuthorize`/);
   const line = realmDoc.split("\n").find((l) => l.includes("Known gap, not checked"));
@@ -175,4 +176,56 @@ test("REALM_AS_CODE.md: --verify-live always runs the service-client rules, with
   assert.doesNotMatch(row, /and, with `--registry`, the service-client rules/);
   assert.match(row, /the TPP rules and the service-client rules \(registry from `--registry`, default `realm\/service-clients\.json`/);
   assert.match(paragraph("Live drift check."), /checked statically only/);
+});
+
+// Review findings on gap (5), 2026-10-17. The staff check runs in the sign-in
+// and reset flows only: Keycloak 26.7.5's refresh grant runs no flow and
+// checks no role, so a banker removed from /staff/fbx-banker kept refreshing
+// staff web tokens with the ledger audience until the client session ended.
+// prompt=none answers with a redirect carrying error=login_required, not a
+// 401. The page before the reset e-mail is the same for every username; the
+// response time is not (the built-in step sends the mail before it answers).
+const gap5 = () => {
+  const line = realmDoc.split("\n").find((l) => l.includes("Known gap, not checked"));
+  return line.slice(line.indexOf("(5) Who signs in to staff web"), line.indexOf("Known gap, not checked"));
+};
+
+test("REALM_AS_CODE.md gap (5): staff role at sign-in only, refresh does not check roles again, and a removal from a staff group logs the user out", () => {
+  const text = gap5();
+  assert.match(text, /users who hold a staff role at sign-in/);
+  assert.doesNotMatch(text, /Only users with a staff role/);
+  assert.match(text, /refresh[^.]*does not check roles again/);
+  // The window follows staff web's client session limits in the realm file.
+  const realm = JSON.parse(fs.readFileSync(path.join(root, "realm/fintechbankx-realm.json"), "utf8"));
+  const attrs = realm.clients.find((c) => c.clientId === "fintechbankx-staff-web").attributes;
+  assert.equal(attrs["client.session.max.lifespan"], "28800");
+  assert.equal(attrs["client.session.idle.timeout"], "900");
+  assert.match(text, /8 hours at most[^.]*15 minutes idle/);
+  assert.match(text, /`POST \/admin\/realms\/<realm>\/users\/\{id\}\/logout`/);
+  assert.match(text, /or disable the user/);
+});
+
+test("REALM_AS_CODE.md: prompt=none answers error=login_required, and only the page before the reset e-mail is the same for every username", () => {
+  const text = gap5();
+  assert.match(text, /`prompt=none`[^.]*`error=login_required`/);
+  assert.match(text, /plain cookie visit[^.]*401/);
+  assert.match(text, /page before the e-mail is the same for every username/);
+  assert.match(text, /answers more slowly when it sends a mail/);
+  const rules = fs.readFileSync(path.join(root, "scripts/realm/service-client-rules.mjs"), "utf8");
+  for (const [name, body] of [...markdownFiles(path.join(root, "docs")).map((f) => [path.relative(root, f), fs.readFileSync(f, "utf8")]), ["service-client-rules.mjs", rules]]) {
+    assert.doesNotMatch(body.replace(/\n\/\/ ?/g, " "), /(answer|response) before the e-mail is the same for every username/, name);
+    for (const sentence of sentences(body.replace(/\n\/\/ ?/g, " "))) {
+      if (/prompt=none/.test(sentence) && /\b401\b/.test(sentence)) assert.match(sentence, /login_required/, `${name}: ${sentence}`);
+    }
+  }
+});
+
+test("REALM_AS_CODE.md: the Live drift check paragraph names what --live and --live-export read now, and the credential a CronJob would need", () => {
+  const text = paragraph("Live drift check.");
+  for (const k of ["`authenticationFlows`", "`resetCredentialsFlow`", "`registrationAllowed`", "`identityProviders`", "`defaultRole`", "composites",
+    ".../roles`", ".../roles-by-id/<id>/composites`", ".../authentication/flows`", ".../authentication/flows/<alias>/executions`", ".../authentication/flows/<id>`",
+    ".../authentication/config/<id>`", ".../identity-provider/instances`", "staff sign-in rule", "`view-clients`", "`view-realm`", "`view-identity-providers`"]) {
+    assert.ok(text.includes(k), `the Live drift check paragraph does not name ${k}`);
+  }
+  assert.doesNotMatch(text, /probably `view-realm`/);
 });

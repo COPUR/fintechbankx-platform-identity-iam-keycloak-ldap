@@ -588,7 +588,14 @@ function liveRealm() {
     clientScopes: [...realm.clientScopes, ...builtInScopes].map((sc) => ({ id: `id-${sc.name}`, ...sc })),
     defaultDefaultClientScopes: [...realm.defaultDefaultClientScopes],
     defaultOptionalClientScopes: ["offline_access"],
-    roles: { realm: structuredClone(realm.roles.realm), client: {} },
+    // Keycloak adds offline_access, uma_authorization and the default role
+    // default-roles-<realm> (every user holds it), with the account client's
+    // roles, to a realm imported from this file.
+    roles: { realm: [...structuredClone(realm.roles.realm), { name: "offline_access", composite: false, clientRole: false }, { name: "uma_authorization", composite: false, clientRole: false },
+      { name: "default-roles-fintechbankx", composite: true, clientRole: false, composites: { realm: ["offline_access", "uma_authorization"], client: { account: ["view-profile", "manage-account"] } } }],
+    client: { account: [{ name: "view-profile", composite: false, clientRole: true }, { name: "manage-account", composite: true, clientRole: true, composites: { client: { account: ["manage-account-links"] } } },
+      { name: "manage-account-links", composite: false, clientRole: true }] } },
+    defaultRole: { name: "default-roles-fintechbankx", composite: true, clientRole: false },
     scopeMappings: structuredClone(realm.scopeMappings),
     clientScopeMappings: {}
   };
@@ -628,6 +635,10 @@ function adminApi(live) {
   const urls = [];
   const json = (body) => new Response(JSON.stringify(body), { status: 200 });
   const byId = (list, id) => list.find((x) => x.id === decodeURIComponent(id));
+  const roleId = (owner, r) => (owner === null ? `id-${r.name}` : `id-${owner}-role-${r.name}`);
+  const roleRep = (owner, r) => ({ id: roleId(owner, r), name: r.name, composite: !!r.composite, clientRole: owner !== null, containerId: owner === null ? "id-realm" : `id-${owner}` });
+  const roleById = (id) => [...live.roles.realm.map((r) => [null, r]), ...Object.entries(live.roles.client).flatMap(([owner, rs]) => rs.map((r) => [owner, r]))]
+    .find(([owner, r]) => roleId(owner, r) === id)?.[1];
   const fetch = async (url) => {
     urls.push(String(url));
     const u = new URL(url);
@@ -640,9 +651,9 @@ function adminApi(live) {
     if (p === "/client-scopes") return json(live.clientScopes);
     if (p === "/default-default-client-scopes") return json(live.defaultDefaultClientScopes.map((name) => ({ id: `id-${name}`, name })));
     if (p === "/default-optional-client-scopes") return json(live.defaultOptionalClientScopes.map((name) => ({ id: `id-${name}`, name })));
-    if (p === "") return json({ realm: "fintechbankx", resetCredentialsFlow: live.resetCredentialsFlow, registrationAllowed: live.registrationAllowed });
+    if (p === "") return json({ realm: "fintechbankx", resetCredentialsFlow: live.resetCredentialsFlow, registrationAllowed: live.registrationAllowed, defaultRole: live.defaultRole });
     if (p === "/identity-provider/instances") return json(live.identityProviders || []);
-    if (p === "/roles") return json(live.roles.realm.map((r) => ({ id: `id-${r.name}`, name: r.name, composite: !!r.composite, clientRole: false })));
+    if (p === "/roles") return json(live.roles.realm.map((r) => roleRep(null, r)));
     if (p === "/authentication/flows") return json(live.authenticationFlows.filter((f) => f.topLevel));
     let m = p.match(/^\/authentication\/flows\/([^/]+)\/executions$/);
     if (m) {
@@ -653,6 +664,16 @@ function adminApi(live) {
     if (m) {
       const x = byId(m[1] === "flows" ? live.authenticationFlows : live.authenticatorConfig, m[2]);
       return x ? json(x) : new Response("not found", { status: 404 });
+    }
+    // A role's own composites (GET /roles-by-id/{id}/composites), realm and
+    // client roles alike, a client role naming its client's id.
+    m = p.match(/^\/roles-by-id\/([^/]+)\/composites$/);
+    if (m) {
+      const role = roleById(decodeURIComponent(m[1]));
+      if (!role) return new Response("not found", { status: 404 });
+      const def = (owner, name) => (owner === null ? live.roles.realm : live.roles.client[owner] || []).find((r) => r.name === name) || { name };
+      return json([...(role.composites?.realm || []).map((n) => roleRep(null, def(null, n))),
+        ...Object.entries(role.composites?.client || {}).flatMap(([owner, ns]) => ns.map((n) => roleRep(owner, def(owner, n))))]);
     }
     m = p.match(/^\/clients\/([^/]+)\/roles$/);
     if (m) return json(live.roles.client[byId(live.clients, m[1]).clientId] || []);
@@ -677,7 +698,9 @@ function flattenFlow(live, flow, level) {
       const sub = live.authenticationFlows.find((f) => f.alias === e.flowAlias);
       return [{ ...base, displayName: e.flowAlias, authenticationFlow: true, flowId: sub?.id }, ...(sub ? flattenFlow(live, sub, level + 1) : [])];
     }
-    const config = live.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig);
+    // An execution names its config by alias in the flow representation and
+    // by id here; configId (test only) picks one of two configs with one alias.
+    const config = live.authenticatorConfig.find((c) => e.configId !== undefined && c.id === e.configId) || live.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig);
     return [{ ...base, displayName: e.authenticator, providerId: e.authenticator, ...(config ? { authenticationConfig: config.id, alias: config.alias } : {}) }];
   });
 }
@@ -996,7 +1019,7 @@ test("staff web signs in only users with a staff role: browser flow fbx-staff-br
   assert.deepEqual(Object.values(realmCheck.STAFF_ROLE_GROUPS), FLOW_STAFF_ROLES);
   for (const c of conditions) assert.deepEqual(c, { condUserRole: c.condUserRole, negate: "true" });
   for (const f of realm.authenticationFlows) assert.equal(f.providerId, "basic-flow", f.alias);
-  // Forgot password: the built-in reset credentials flow plus the staff check
+  // A forgotten password resets through the built-in reset credentials flow plus the staff check
   // for staff channel clients after the e-mail step, before the new password.
   assert.equal(realm.resetCredentialsFlow, RESET_FLOW);
   assert.equal(flowOf(realm, RESET_FLOW).topLevel, true);
@@ -1057,6 +1080,11 @@ test("the gate refuses staff web without the staff flow, and any flow that lets 
     ["marker scope with a mapper", (r) => { r.clientScopes.find((x) => x.name === MARKER).protocolMappers = [{ name: "x", protocol: "openid-connect", protocolMapper: "oidc-hardcoded-claim-mapper", config: { "claim.name": "x", "claim.value": "y" } }]; },
       `client scope ${MARKER}: must have no protocol mappers`],
     ["self-registration on", (r) => { r.registrationAllowed = true; }, "realm: registrationAllowed must be false"],
+    // Jackson trims and reads "true" in any case as true; anything but false,
+    // absent or "false" is refused.
+    ...[" true", "TRUE", "True ", 1, "yes", "", null].map((v) => [`registrationAllowed ${JSON.stringify(v)}`, (r) => { r.registrationAllowed = v; }, "realm: registrationAllowed must be false"]),
+    ["executions listed out of priority order", (r) => { flowOf(r, `${STAFF_FLOW} OTP`).authenticationExecutions.reverse(); },
+      `flow ${STAFF_FLOW} OTP: executions are not listed in priority order`],
     ["an identity provider", (r) => { r.identityProviders = [{ alias: "corp-idp", providerId: "oidc", enabled: true }]; }, "realm: identity provider corp-idp"],
     ["direct grant on staff web", (r) => { client({ realm: r }, STAFF_WEB).directAccessGrantsEnabled = true; }, `${STAFF_WEB}: directAccessGrantsEnabled must be false`]
   ];
@@ -1065,6 +1093,11 @@ test("the gate refuses staff web without the staff flow, and any flow that lets 
     mutate(input.realm);
     const errors = checkRealm(input);
     assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+  for (const v of [false, undefined, "false", " FALSE ", "False"]) {
+    const input = fresh();
+    input.realm.registrationAllowed = v;
+    assert.deepEqual(checkRealm(input), [], `registrationAllowed ${JSON.stringify(v)}`);
   }
   // The override may name the flow by alias (realm file) or by id (export).
   const byId = fresh();
@@ -1105,6 +1138,137 @@ test("live: staff web's sign-in flow, the same through the admin API and a parti
   for (const p of ["/roles", "/authentication/flows", `/authentication/flows/${STAFF_FLOW}/executions`, `/authentication/flows/${encodeURIComponent(`id-${STAFF_FLOW} staff only`)}`,
     `/authentication/config/${encodeURIComponent(`id-${STAFF_FLOW} not banker`)}`, `/authentication/flows/${RESET_FLOW}/executions`, "/identity-provider/instances"]) {
     assert.ok(api.urls.some((u) => u.startsWith(`http://kc.test/admin/realms/fintechbankx${p}`)), `${p} not fetched: ${api.urls.join(" ")}`);
+  }
+});
+
+// Review finding (blocker): the flow trees were compared as joined strings,
+// so the one-key config {condUserRole: "banker,negate=true"} read like the
+// expected {condUserRole: "banker", negate: "true"} while Keycloak looked up
+// the unknown role "banker,negate=true", found none and skipped the deny
+// (local Keycloak 26.7.5). The trees compare as structures: every config an
+// exact key set with exact string values, and the error names the step.
+const roleStep = (cfg) => `REQUIRED conditional-user-role ${JSON.stringify(Object.fromEntries(Object.entries(cfg).sort()))}`;
+const STAFF_CONFIG_SPOOFS = [
+  ["a value holding ',negate=true'", { condUserRole: "banker,negate=true" }],
+  ["a key holding '=' and ','", { "condUserRole=banker,negate": "true" }],
+  ["an extra key", { condUserRole: "banker", negate: "true", extra: "x" }],
+  ["a value holding '='", { condUserRole: "banker", negate: "true=true" }]
+];
+const spoofDiff = (cfg) => `${STAFF_FLOW} staff only step 1: got ${roleStep(cfg)}, want ${roleStep({ condUserRole: "banker", negate: "true" })}`;
+const MARKER_SPOOF = { client_scope: `${MARKER},negate=false` };
+const markerDiff = `${RESET_FLOW} staff only step 1: got REQUIRED conditional-client-scope ${JSON.stringify(MARKER_SPOOF)}, want REQUIRED conditional-client-scope ${JSON.stringify({ client_scope: MARKER, negate: "false" })}`;
+
+test("the staff flows compare as structures: a config value or key holding ',' or '=', or an extra key, is refused and named", () => {
+  for (const [name, cfg] of STAFF_CONFIG_SPOOFS) {
+    const input = fresh();
+    staffConfig(input.realm, "banker").config = structuredClone(cfg);
+    const errors = checkRealm(input);
+    const e = errors.find((x) => x.startsWith(flowDiffers));
+    assert.ok(e, `${name}: ${flowDiffers} not in\n${errors.join("\n")}`);
+    assert.ok(e.endsWith(`: ${spoofDiff(cfg)}`), `${name}: ${e}`);
+  }
+  const input = fresh();
+  input.realm.authenticatorConfig.find((c) => c.config.client_scope === MARKER).config = structuredClone(MARKER_SPOOF);
+  const errors = checkRealm(input);
+  assert.ok(errors.some((x) => x.startsWith(resetDiffers) && x.endsWith(`: ${markerDiff}`)), errors.join("\n"));
+});
+
+test("live: the staff flows compare as structures, the same through the admin API and a partial export", async () => {
+  for (const [name, cfg] of STAFF_CONFIG_SPOOFS) {
+    const live = liveRealm();
+    live.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} not banker`).config = structuredClone(cfg);
+    const errors = await liveErrors(live);
+    assert.ok(errors.some((x) => x.startsWith(flowDiffers) && x.endsWith(`: ${spoofDiff(cfg)}`)), `${name}:\n${errors.join("\n")}`);
+  }
+  const live = liveRealm();
+  live.authenticatorConfig.find((c) => c.config.client_scope === MARKER).config = structuredClone(MARKER_SPOOF);
+  const errors = await liveErrors(live);
+  assert.ok(errors.some((x) => x.startsWith(resetDiffers) && x.endsWith(`: ${markerDiff}`)), errors.join("\n"));
+});
+
+// Review finding (major): Keycloak's role condition asks hasRole, which counts
+// composites and the default role default-roles-<realm> that every user
+// holds. A staff role in the composites of customer, of the default role or
+// of a client role they reach let customers (or every user) through the deny
+// (local Keycloak 26.7.5). Staff roles come only from the /staff/fbx-* groups.
+const viaComposite = (holder, staffRole) => `realm role ${holder} reaches staff role ${staffRole} through its composites`;
+const viaDefaultRole = (staffRole) => `realm: default role default-roles-fintechbankx reaches staff role ${staffRole} through its composites`;
+const viaGroup = (group, staffRole) => `group ${group} grants staff role ${staffRole}`;
+const realmRoleOf = (r, name) => r.roles.realm.find((x) => x.name === name);
+const STAFF_ROLE_ROUTES = [
+  ["customer a composite of auditor", (r) => Object.assign(realmRoleOf(r, "customer"), { composite: true, composites: { realm: ["auditor"] } }), viaComposite("customer", "auditor")],
+  ["customer reaches banker through a client role", (r) => {
+    r.roles.client = { ...(r.roles.client || {}), "fintechbankx-web": [{ name: "bundle", composite: true, clientRole: true, composites: { realm: ["banker"] } }] };
+    Object.assign(realmRoleOf(r, "customer"), { composite: true, composites: { client: { "fintechbankx-web": ["bundle"] } } });
+  }, viaComposite("customer", "banker")],
+  ["admin a composite of loan_officer", (r) => Object.assign(realmRoleOf(r, "admin"), { composite: true, composites: { realm: ["loan_officer"] } }), viaComposite("admin", "loan_officer")]
+];
+
+test("a staff role is refused in another role's composites, in the default role and on a group outside /staff/fbx-*", () => {
+  const cases = [
+    ...STAFF_ROLE_ROUTES,
+    ["the default role reaches auditor", (r) => { r.roles.realm.push({ name: "default-roles-fintechbankx", composite: true, clientRole: false, composites: { realm: ["offline_access", "auditor"] } }); }, viaDefaultRole("auditor")],
+    ["/customers grants auditor", (r) => { r.groups.find((g) => g.path === "/customers").realmRoles.push("auditor"); }, viaGroup("/customers", "auditor")],
+    ["/staff grants admin", (r) => { r.groups.find((g) => g.path === "/staff").realmRoles.push("admin"); }, viaGroup("/staff", "admin")],
+    ["a subgroup of /staff/fbx-banker grants compliance_officer", (r) => {
+      r.groups.find((g) => g.path === "/staff").subGroups.find((g) => g.name === "fbx-banker").subGroups.push({ name: "x", path: "/staff/fbx-banker/x", realmRoles: ["compliance_officer"], subGroups: [] });
+    }, viaGroup("/staff/fbx-banker/x", "compliance_officer")],
+    ["/customers reaches banker through a client role", (r) => {
+      r.roles.client = { "fintechbankx-web": [{ name: "bundle", composite: true, clientRole: true, composites: { realm: ["banker"] } }] };
+      r.groups.find((g) => g.path === "/customers").clientRoles = { "fintechbankx-web": ["bundle"] };
+    }, viaGroup("/customers", "banker")]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const input = fresh();
+    mutate(input.realm);
+    const errors = checkRealm(input);
+    assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+});
+
+test("live: a staff role in another role's composites or in the default role is refused, the same through the admin API and a partial export", async () => {
+  const cases = [
+    ...STAFF_ROLE_ROUTES,
+    ["the default role reaches auditor", (l) => realmRoleOf(l, "default-roles-fintechbankx").composites.realm.push("auditor"), viaDefaultRole("auditor")],
+    ["the default role reaches banker through the account client's manage-account", (l) => {
+      l.roles.client.account.find((x) => x.name === "manage-account").composites.realm = ["banker"];
+    }, viaDefaultRole("banker")]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const live = liveRealm();
+    mutate(live);
+    const errors = await liveErrors(live);
+    assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+  // --live reads a composite role's composites by id, and a composite client
+  // role's too; the default role reaches only offline_access,
+  // uma_authorization and account roles.
+  const api = adminApi(liveRealm());
+  const ok = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
+  assert.deepEqual(ok.errors, []);
+  for (const p of ["/roles-by-id/id-default-roles-fintechbankx/composites", "/roles-by-id/id-account-role-manage-account/composites"]) {
+    assert.ok(api.urls.includes(`http://kc.test/admin/realms/fintechbankx${p}`), `${p} not fetched: ${api.urls.join(" ")}`);
+  }
+  assert.ok(!api.urls.some((u) => u.includes("/roles-by-id/id-customer/")), "a role that is not composite is read by id");
+});
+
+// Review finding: --live read only the configs of the staff flows, a partial
+// export lists every config, so a config of another flow reusing a staff
+// config's alias (Keycloak 26.7.5 accepts that through PUT
+// /authentication/config/{id}) failed --live-export only. --live now reads
+// the executions of every top-level flow, so both refuse it alike.
+test("live: a config of another flow that reuses a staff config's alias is refused alike through the admin API and a partial export", async () => {
+  const live = liveRealm();
+  live.authenticationFlows.push({ id: "id-rv copy", alias: "rv copy", description: "copy", providerId: "basic-flow", topLevel: true, builtIn: false,
+    authenticationExecutions: [{ authenticator: "conditional-user-role", authenticatorFlow: false, requirement: "REQUIRED", priority: 10, userSetupAllowed: false,
+      authenticatorConfig: `${STAFF_FLOW} not banker`, configId: "id-rv copy config" }] });
+  live.authenticatorConfig.push({ id: "id-rv copy config", alias: `${STAFF_FLOW} not banker`, config: { condUserRole: "customer", negate: "false" } });
+  const errors = await liveErrors(live);
+  assert.ok(errors.includes(`flow ${STAFF_FLOW}: authenticator config alias ${STAFF_FLOW} not banker is not unique`), errors.join("\n"));
+  const api = adminApi(live);
+  await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
+  for (const p of ["/authentication/flows/rv%20copy/executions", "/authentication/flows/browser/executions", `/authentication/config/${encodeURIComponent("id-rv copy config")}`]) {
+    assert.ok(api.urls.includes(`http://kc.test/admin/realms/fintechbankx${p}`), `${p} not fetched: ${api.urls.join(" ")}`);
   }
 });
 

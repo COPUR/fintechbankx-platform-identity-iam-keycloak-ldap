@@ -150,6 +150,32 @@ const lightweightAudienceResolve = (holder) => (holder?.protocolMappers || [])
 const exemptBuiltIn = (c, scopesByName) => BUILT_IN_ADMIN_CLIENTS.includes(c.clientId) && c.attributes?.[LIGHTWEIGHT_TOKENS] === "true"
   && ![c, ...[...(c.defaultClientScopes || []), ...(c.optionalClientScopes || [])].map((n) => scopesByName.get(n))].some(lightweightAudienceResolve);
 
+// Every role that seeds ([owner client id or null for a realm role, name])
+// reach through composites at any depth (roles.realm, roles.client, and the
+// realm's defaultRole when roles.realm lacks it), keyed by roleKey.
+const roleKey = (owner, name) => JSON.stringify([owner, name]);
+const compositesOf = (r) => [...(r?.composites?.realm || []).map((n) => [null, n]),
+  ...Object.entries(r?.composites?.client || {}).flatMap(([id, ns]) => (ns || []).map((n) => [id, n]))];
+function roleReach(realm) {
+  const defs = new Map([
+    ...(realm.defaultRole?.name ? [[roleKey(null, realm.defaultRole.name), realm.defaultRole]] : []),
+    ...(realm.roles?.realm || []).map((r) => [roleKey(null, r.name), r]),
+    ...Object.entries(realm.roles?.client || {}).flatMap(([id, rs]) => (rs || []).map((r) => [roleKey(id, r.name), r]))
+  ]);
+  return (seeds) => {
+    const seen = new Set();
+    const todo = [...seeds];
+    while (todo.length) {
+      const [owner, name] = todo.pop();
+      const k = roleKey(owner, name);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      todo.push(...compositesOf(defs.get(k)));
+    }
+    return seen;
+  };
+}
+
 // The client roles of callee in each client's and client scope's role scope,
 // as Keycloak's hasScope decides it (ClientAdapter, ClientScopeAdapter):
 // a client other than the callee holds every callee role when its
@@ -163,24 +189,10 @@ const exemptBuiltIn = (c, scopesByName) => BUILT_IN_ADMIN_CLIENTS.includes(c.cli
 export function calleeRoleScopes(realm, callee) {
   const calleeRoles = (realm.roles?.client?.[callee] || []).map((r) => r.name);
   if (!calleeRoles.length) return [];
-  const key = (owner, name) => JSON.stringify([owner, name]);
-  const defs = new Map([
-    ...(realm.roles?.realm || []).map((r) => [key(null, r.name), r]),
-    ...Object.entries(realm.roles?.client || {}).flatMap(([id, rs]) => (rs || []).map((r) => [key(id, r.name), r]))
-  ]);
+  const reach = roleReach(realm);
   const inScope = (seeds) => {
-    const seen = new Set();
-    const todo = [...seeds];
-    while (todo.length) {
-      const [owner, name] = todo.pop();
-      const k = key(owner, name);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      const r = defs.get(k);
-      for (const n of r?.composites?.realm || []) todo.push([null, n]);
-      for (const [id, ns] of Object.entries(r?.composites?.client || {})) for (const n of ns || []) todo.push([id, n]);
-    }
-    return calleeRoles.filter((n) => seen.has(key(callee, n))).sort();
+    const seen = reach(seeds);
+    return calleeRoles.filter((n) => seen.has(roleKey(callee, n))).sort();
   };
   const explicit = (match) => [
     ...(realm.scopeMappings || []).filter(match).flatMap((m) => (m.roles || []).map((n) => [null, n])),
@@ -261,9 +273,14 @@ export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c
 // role condition (ConditionalRoleAuthenticator, 26.7.5) returns false for a
 // role name it cannot resolve whatever negate says, so one unknown role turns
 // the deny off for every user: the gate requires the exact flow tree (order,
-// requirements, authenticators, configs), negate "true" and every staff role
-// to exist as a realm role. Staff roles reach users through the LDAP groups
-// /staff/fbx-* (composites and group roles count, as in Keycloak's hasRole).
+// requirements, authenticators, configs, compared as structures: every config
+// an exact key set with exact string values), negate "true" and every staff
+// role to exist as a realm role. Staff roles reach users only through the
+// LDAP groups /staff/fbx-*. Keycloak's hasRole also counts composites and the
+// default role default-roles-<realm>, which every user holds, so the gate
+// refuses a staff role in the composites (at any depth, through client roles
+// too) of any other realm role or of the default role, and, in the realm file,
+// on any group outside /staff/fbx-*.
 //
 // "Forgot password" ends in a sign-in to the client it started from, through
 // the realm's reset credentials flow, which no client override reaches (a
@@ -273,9 +290,13 @@ export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c
 // staff check after the e-mail step, before the new password is set, run only
 // for a client that has the marker client scope STAFF_CHANNEL_SCOPE as a
 // default scope (conditional-client-scope reads the client's default and
-// requested scopes; every staff channel client carries the marker). The
-// response before the e-mail is the same for every username, so the check
-// reveals nothing to someone who does not hold the e-mail. Self-registration
+// requested scopes; every staff channel client carries the marker). The page
+// before the e-mail is the same for every username, and staff and customers
+// alike get the e-mail, so the staff check adds nothing observable before the
+// link (Keycloak's built-in e-mail step still answers more slowly when it
+// sends a mail). The check runs at sign-in only: a refresh does not check
+// roles again, so a user removed from a staff group keeps refreshing an
+// existing staff web session until it ends. Self-registration
 // and identity providers would sign users in through flows without the
 // check, and direct grant through the realm's direct grant flow, so the realm
 // allows neither and staff channel clients keep direct grant off.
@@ -326,7 +347,8 @@ export function staffSignInFlows(roles = STAFF_ROLES) {
 // sorts by priority; keycloak-config-cli creates subflow executions in list
 // order with a priority of its own, so list and priority order must agree),
 // each a subflow (by alias) or an authenticator with its config (by alias).
-// Ids, descriptions and the priority values themselves do not count.
+// Ids, descriptions, subflow aliases and the priority values themselves do
+// not count (treeShape); alias is kept for the error messages only.
 function flowTree(view, alias, errs, seen = [], root = alias) {
   const found = (view.authenticationFlows || []).filter((f) => f.alias === alias);
   if (found.length !== 1 || seen.includes(alias)) return { missing: alias };
@@ -341,15 +363,33 @@ function flowTree(view, alias, errs, seen = [], root = alias) {
     return cs.length === 1 ? Object.fromEntries(Object.entries(cs[0].config || {}).map(([k, v]) => [k, String(v)]).sort()) : { missing: a };
   };
   return {
+    alias,
     providerId: f.providerId,
     steps: sorted.map((e) => (e.authenticatorFlow === true
       ? { requirement: e.requirement, flow: flowTree(view, e.flowAlias, errs, [...seen, alias], root) }
       : { requirement: e.requirement, authenticator: e.authenticator, ...(e.authenticatorConfig !== undefined ? { config: config(e.authenticatorConfig) } : {}) }))
   };
 }
-const describeTree = (t) => (t.missing !== undefined ? `<missing ${t.missing}>`
-  : `${t.providerId === "basic-flow" ? "" : `${t.providerId} `}[${t.steps.map((s) => `${s.requirement} ${s.flow ? describeTree(s.flow)
-    : s.authenticator + (s.config ? `{${Object.entries(s.config).map(([k, v]) => `${k}=${v}`).join(",")}}` : "")}`).join(", ")}]`);
+// What the comparison reads of a tree, compared as JSON (never as a string
+// joined by hand: a config value holding "," or "=" must not read as two keys).
+const treeShape = (t) => (t.missing !== undefined ? { missing: t.missing } : { providerId: t.providerId, steps: t.steps.map(stepShape) });
+const stepShape = (s) => (s.flow ? { requirement: s.requirement, flow: treeShape(s.flow) } : { requirement: s.requirement, authenticator: s.authenticator, config: s.config ?? null });
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const describeStep = (s) => (!s ? "nothing" : `${s.requirement} ${s.flow ? (s.flow.missing !== undefined ? `<missing ${s.flow.missing}>` : `flow ${s.flow.alias}`)
+  : `${s.authenticator}${s.config ? ` ${JSON.stringify(s.config)}` : ""}`}`);
+// Each difference, as "<expected flow alias> step <n>: got ..., want ...".
+function treeDiffs(got, want, out = []) {
+  if (same(treeShape(got), treeShape(want))) return out;
+  if (got.missing !== undefined) return [...out, `${want.alias}: got <missing ${got.missing}>`];
+  if (got.providerId !== want.providerId) out.push(`${want.alias}: got provider ${got.providerId}, want ${want.providerId}`);
+  for (let i = 0; i < Math.max(got.steps.length, want.steps.length); i++) {
+    const [g, w] = [got.steps[i], want.steps[i]];
+    if (g && w && same(stepShape(g), stepShape(w))) continue;
+    if (g?.flow && w?.flow && g.requirement === w.requirement && g.flow.missing === undefined) treeDiffs(g.flow, w.flow, out);
+    else out.push(`${want.alias} step ${i + 1}: got ${describeStep(g)}, want ${describeStep(w)}`);
+  }
+  return out;
+}
 
 export function staffSignInErrors(realm, registry) {
   const errs = new Set();
@@ -357,9 +397,8 @@ export function staffSignInErrors(realm, registry) {
   const want = staffSignInFlows();
   const checkFlow = (alias, what) => {
     if (!flows.some((f) => f.alias === alias)) { errs.add(`flow ${alias} missing (${what})`); return; }
-    const expected = describeTree(flowTree(want, alias, new Set()));
-    const got = describeTree(flowTree(realm, alias, errs));
-    if (got !== expected) errs.add(`flow ${alias}: differs from the realm-as-code (${what}): got ${got}`);
+    const diffs = treeDiffs(flowTree(realm, alias, errs), flowTree(want, alias, new Set()));
+    if (diffs.length) errs.add(`flow ${alias}: differs from the realm-as-code (${what}): ${diffs.join("; ")}`);
   };
   const roleList = STAFF_ROLES.join(", ");
   checkFlow(STAFF_BROWSER_FLOW, `sign in, then deny any user without one of ${roleList}`);
@@ -370,10 +409,36 @@ export function staffSignInErrors(realm, registry) {
       if (!realmRoles.has(r)) errs.add(`flow ${STAFF_BROWSER_FLOW}: realm role ${r} does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`);
     }
   }
+  const reach = roleReach(realm);
+  const staffReached = (seeds) => { const seen = reach(seeds); return STAFF_ROLES.filter((r) => seen.has(roleKey(null, r))); };
+  const defaultRole = realm.defaultRole?.name ?? (realm.realm !== undefined ? `default-roles-${String(realm.realm).toLowerCase()}` : undefined);
+  const roleDefs = [...(realm.roles?.realm || []), ...(realm.defaultRole?.name && !(realm.roles?.realm || []).some((r) => r.name === realm.defaultRole.name) ? [realm.defaultRole] : [])];
+  for (const r of roleDefs) {
+    for (const s of staffReached(compositesOf(r)).filter((x) => x !== r.name)) {
+      errs.add(r.name === defaultRole
+        ? `realm: default role ${r.name} reaches staff role ${s} through its composites; every user holds it, so the staff check lets every user through`
+        : `realm role ${r.name} reaches staff role ${s} through its composites; staff roles come only from the /staff/fbx-* groups, and every user who holds ${r.name} passes the staff check`);
+    }
+  }
+  // Groups: the realm file only (the live views carry none).
+  const groupErrors = (gs, parent = "") => {
+    for (const g of gs || []) {
+      const p = g.path || `${parent}/${g.name}`;
+      if (!/^\/staff\/fbx-[^/]+$/.test(p)) {
+        const seeds = [...(g.realmRoles || []).map((n) => [null, n]), ...Object.entries(g.clientRoles || {}).flatMap(([id, ns]) => (ns || []).map((n) => [id, n]))];
+        for (const s of staffReached(seeds)) errs.add(`group ${p} grants staff role ${s}, directly or through composites; staff roles come only from the /staff/fbx-* groups`);
+      }
+      groupErrors(g.subGroups, p);
+    }
+  };
+  groupErrors(realm.groups);
   if (realm.resetCredentialsFlow !== STAFF_RESET_FLOW) {
     errs.add(`realm: resetCredentialsFlow must be the flow ${STAFF_RESET_FLOW} (got ${JSON.stringify(realm.resetCredentialsFlow ?? "none")}); with another flow "forgot password" signs any user in to a staff channel client`);
   }
-  if (realm.registrationAllowed === true || String(realm.registrationAllowed).toLowerCase() === "true") {
+  // Jackson reads a trimmed "true" in any case as true: only false, absent or
+  // "false" (trimmed, any case) pass.
+  const v = realm.registrationAllowed;
+  if (!(v === false || v === undefined || (typeof v === "string" && v.trim().toLowerCase() === "false"))) {
     errs.add("realm: registrationAllowed must be false (self-registration signs the new user in to the client it started from, staff web included, without the staff check)");
   }
   for (const idp of realm.identityProviders || []) {
@@ -498,7 +563,8 @@ export function serviceClientErrors(realm, registry) {
     }
   }
 
-  // Who can obtain staff web's audiences (the ledger's among them): staff only.
+  // Who can obtain staff web's audiences (the ledger's among them): users who
+  // hold a staff role at sign-in.
   for (const m of staffSignInErrors(realm, registry)) err(m);
   return errors;
 }
