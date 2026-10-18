@@ -10,11 +10,13 @@
       "source": "contract",
       "audiences": [
         "svc-cus-profile-kyc",
-        "svc-acc-accounts-ledger"
+        "svc-acc-accounts-ledger",
+        "svc-rsk-decisioning"
       ],
       "audienceProvenance": {
         "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08 (CustomerProfileHttpAdapter)",
-        "svc-acc-accounts-ledger": "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)"
+        "svc-acc-accounts-ledger": "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)",
+        "svc-rsk-decisioning": "confirmed by CRC screening-facts plan 2026-10-18 (owner's answer \"Risk decides\": loan enforces risk's POST /api/v1/risk/loan-eligibility)"
       }
     },
     {
@@ -32,8 +34,8 @@
         "svc-acc-accounts-ledger"
       ],
       "audienceProvenance": {
-        "svc-rsk-decisioning": "confirmed by service thread 2026-10-08",
-        "svc-cmp-evidence": "confirmed by service thread 2026-10-08",
+        "svc-rsk-decisioning": "confirmed by service thread 2026-10-08 (RiskDecisioningHttpAdapter POST /api/v1/risk/assess; v2 per CRC screening-facts plan 2026-10-18)",
+        "svc-cmp-evidence": "confirmed by service thread 2026-10-08 (ComplianceEvidenceHttpAdapter POST /api/v1/compliance/screen; v2 per CRC screening-facts plan 2026-10-18)",
         "svc-of-payee-verification": "confirmed by service thread 2026-10-08",
         "svc-cus-profile-kyc": "confirmed by customer thread 2026-10-08: GET /api/v1/customers/{id}/kyc-status (SERVICE_CALLERS_KYC)",
         "svc-acc-accounts-ledger": "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)"
@@ -98,8 +100,12 @@
       "serviceAccount": "risk-decisioning-service",
       "displayName": "Risk Decisioning Service",
       "source": "contract",
-      "audiences": [],
-      "audienceProvenance": {}
+      "audiences": [
+        "svc-cus-profile-kyc"
+      ],
+      "audienceProvenance": {
+        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (risk reads GET /api/v1/customers/{id}/credit for loan eligibility)"
+      }
     },
     {
       "clientId": "svc-cmp-evidence",
@@ -108,8 +114,12 @@
       "serviceAccount": "compliance-evidence-service",
       "displayName": "Compliance Evidence Service",
       "source": "contract",
-      "audiences": [],
-      "audienceProvenance": {}
+      "audiences": [
+        "svc-cus-profile-kyc"
+      ],
+      "audienceProvenance": {
+        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (compliance reads GET /api/v1/customers/{id}, name and KYC status, for sanctions and PEP screening)"
+      }
     },
     {
       "clientId": "svc-of-consent-authorization",

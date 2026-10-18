@@ -832,6 +832,19 @@
             "introspection.token.claim": "true",
             "lightweight.claim": "false"
           }
+        },
+        {
+          "name": "aud-svc-rsk-decisioning",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-rsk-decisioning",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
         }
       ],
       "defaultClientScopes": [
@@ -1138,7 +1151,21 @@
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false"
       },
-      "protocolMappers": [],
+      "protocolMappers": [
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
       "defaultClientScopes": [
         "basic",
         "roles"
@@ -1174,7 +1201,21 @@
         "oauth2.device.authorization.grant.enabled": "false",
         "oidc.ciba.grant.enabled": "false"
       },
-      "protocolMappers": [],
+      "protocolMappers": [
+        {
+          "name": "aud-svc-cus-profile-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "svc-cus-profile-kyc",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "false"
+          }
+        }
+      ],
       "defaultClientScopes": [
         "basic",
         "roles"

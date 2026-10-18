@@ -883,7 +883,7 @@ test("the four SERVICE_CALLERS of the accounts ledger reach it only through the 
     assert.ok(!client(input, id).defaultClientScopes.includes(LEDGER_SCOPE), `${id}: ${LEDGER_SCOPE} must not be a default scope`);
   }
   // The callers' other audiences stay always-on mappers, as before.
-  assert.deepEqual(auds(input, "svc-ln-loan-lifecycle"), ["svc-cus-profile-kyc"]);
+  assert.deepEqual(auds(input, "svc-ln-loan-lifecycle"), ["svc-cus-profile-kyc", "svc-rsk-decisioning"]);
   assert.deepEqual(auds(input, "svc-pay-recurring-mandates"), ["svc-of-consent-authorization"]);
   assert.deepEqual(auds(input, "svc-pay-bulk-orchestration"), ["svc-of-consent-authorization"]);
   assert.deepEqual(auds(input, "svc-pay-initiation-settlement"), ["svc-cmp-evidence", "svc-cus-profile-kyc", "svc-of-payee-verification", "svc-rsk-decisioning"]);
@@ -1764,10 +1764,10 @@ test("live: drift from the service-client rules fails, through the admin API and
   const tail = `, so tokens issued with it would carry aud=${LEDGER} (audience resolve); ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope)`;
   const cases = [
     ["ledger audience as a caller's mapper", (l) => liveClient(l, "svc-ln-loan-lifecycle").protocolMappers.push(ledgerAudMapper()),
-      ["svc-ln-loan-lifecycle: audience mappers svc-acc-accounts-ledger,svc-cus-profile-kyc != registry svc-cus-profile-kyc",
+      ["svc-ln-loan-lifecycle: audience mappers svc-acc-accounts-ledger,svc-cus-profile-kyc,svc-rsk-decisioning != registry svc-cus-profile-kyc,svc-rsk-decisioning",
         `svc-ln-loan-lifecycle: audience ${LEDGER} is reached only through the optional scope ${LEDGER_SCOPE} (registry audienceByScope), never through a mapper`]],
     ["registry audience mapper removed", (l) => { liveClient(l, "svc-ln-loan-lifecycle").protocolMappers = []; },
-      ["svc-ln-loan-lifecycle: audience mappers <none> != registry svc-cus-profile-kyc"]],
+      ["svc-ln-loan-lifecycle: audience mappers <none> != registry svc-cus-profile-kyc,svc-rsk-decisioning"]],
     ["ledger scope removed from a caller", (l) => { liveClient(l, "svc-pay-bulk-orchestration").optionalClientScopes = []; },
       [`svc-pay-bulk-orchestration: optional audience scopes <none> != registry ${LEDGER_SCOPE}`]],
     ["ledger scope on a client that does not call the ledger", (l) => liveClient(l, "svc-cus-profile-kyc").optionalClientScopes.push(LEDGER_SCOPE),

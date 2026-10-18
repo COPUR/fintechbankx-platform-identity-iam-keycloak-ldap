@@ -30,10 +30,12 @@ Change flow: edit the registry or the render script, run `node scripts/realm/ren
 
   | Client | aud |
   |---|---|
-  | `svc-ln-loan-lifecycle` | `svc-cus-profile-kyc` (confirmed); `svc-acc-accounts-ledger` (confirmed by accounts ledger thread 2026-10-17, `SERVICE_CALLERS`; optional scope `aud-svc-acc-accounts-ledger`) |
+  | `svc-ln-loan-lifecycle` | `svc-cus-profile-kyc` (confirmed); `svc-acc-accounts-ledger` (confirmed by accounts ledger thread 2026-10-17, `SERVICE_CALLERS`; optional scope `aud-svc-acc-accounts-ledger`); `svc-rsk-decisioning` (loan eligibility, confirmed by the CRC screening-facts plan 2026-10-18) |
   | `svc-pay-initiation-settlement` | `svc-rsk-decisioning`, `svc-cmp-evidence`, `svc-of-payee-verification`, `svc-cus-profile-kyc` (kyc-status) (confirmed); `svc-acc-accounts-ledger` (confirmed by accounts ledger thread 2026-10-17, `SERVICE_CALLERS`; optional scope `aud-svc-acc-accounts-ledger`) |
   | `svc-pay-recurring-mandates` | `svc-of-consent-authorization` (confirmed); `svc-acc-accounts-ledger` (confirmed by accounts ledger thread 2026-10-17, `SERVICE_CALLERS`; optional scope `aud-svc-acc-accounts-ledger`) |
   | `svc-pay-bulk-orchestration` | `svc-of-consent-authorization` (confirmed); `svc-acc-accounts-ledger` (confirmed by accounts ledger thread 2026-10-17, `SERVICE_CALLERS`; optional scope `aud-svc-acc-accounts-ledger`) |
+  | `svc-rsk-decisioning` | `svc-cus-profile-kyc` (credit profile for loan eligibility; confirmed by the CRC screening-facts plan 2026-10-18) |
+  | `svc-cmp-evidence` | `svc-cus-profile-kyc` (name and KYC status for sanctions and PEP screening; confirmed by the CRC screening-facts plan 2026-10-18) |
   | `fintechbankx-web` (customers) | `svc-cus-profile-kyc` (confirmed); loan and the four payment services (derived) |
   | `fintechbankx-staff-web` (staff) | `svc-cus-profile-kyc` (confirmed); loan, the four payment services, `svc-rsk-decisioning`, `svc-cmp-evidence` (derived; risk and compliance moved here from `fintechbankx-web`); `svc-acc-accounts-ledger` (derived, staff-only decision 2026-10-17, not yet confirmed by the accounts ledger thread; optional scope `aud-svc-acc-accounts-ledger`) |
   | `fintechbankx-mobile` | `svc-cus-profile-kyc` (confirmed); loan and the four payment services (derived) |
