@@ -8,6 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { checkRealm, loadFromRepo } from "../../ci/check-realm.mjs";
 
@@ -45,4 +46,15 @@ test("risk and compliance may call customer, and loan may call risk", () => {
 
 test("the rendered realm passes check-realm with the new audiences", () => {
   assert.deepEqual(checkRealm(input), []);
+});
+
+test("the audience table says the callees still have to admit the new callers", () => {
+  // An audience lets the token reach the callee; the callee's own azp check decides.
+  // Loan has no azp check and is no callee of these edges, so the doc must not lean on it.
+  const doc = readFileSync(path.join(root, "docs/identity/REALM_AS_CODE.md"), "utf8");
+  const note = doc.split("\n").find((l) => l.includes("Screening-facts callers"));
+  assert.ok(note, "a note on the screening-facts callers follows the audience table");
+  for (const s of ["svc-rsk-decisioning", "svc-cmp-evidence", "svc-ln-loan-lifecycle", "SERVICE_CALLERS", "GET /api/v1/customers/{id}", "POST /api/v1/risk/loan-eligibility"]) {
+    assert.ok(note.includes(s), `note names ${s}`);
+  }
 });
