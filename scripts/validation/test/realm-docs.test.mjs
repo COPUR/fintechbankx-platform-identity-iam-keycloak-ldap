@@ -205,6 +205,58 @@ test("REALM_AS_CODE.md gap (5): staff role at sign-in only, refresh does not che
   assert.match(text, /or disable the user/);
 });
 
+// Review finding (major, docs): gap (5) said a user removed from a staff group
+// keeps only an existing staff web session until it ends. For a removal in
+// the directory that is wrong: the LDAP provider (cachePolicy DEFAULT) keeps
+// the cached group membership until the next changed-users sync or another
+// eviction, new sign-ins pass the staff check meanwhile, and each session
+// refreshes for up to 8 hours. An LDAP-only change never calls Keycloak.
+const ldapConfig = () => JSON.parse(fs.readFileSync(path.join(root, "realm/fintechbankx-realm.json"), "utf8"))
+  .components["org.keycloak.storage.UserStorageProvider"].find((c) => c.providerId === "ldap").config;
+const comments = (file) => fs.readFileSync(path.join(root, file), "utf8").replace(/\n\s*\/\/ ?/g, " ");
+
+test("REALM_AS_CODE.md gap (5): a staff group removed in the directory reaches Keycloak only after the cached membership is evicted; offboarding logs out or disables the user in Keycloak", () => {
+  const cfg = ldapConfig();
+  assert.deepEqual([cfg.cachePolicy, cfg.changedSyncPeriod, cfg.fullSyncPeriod], [["DEFAULT"], ["900"], ["86400"]]);
+  const text = gap5();
+  assert.doesNotMatch(text, /removed from a staff group keeps getting new staff web tokens[^.]*until that client session ends/);
+  assert.match(text, /`cachePolicy` `DEFAULT`, `changedSyncPeriod` 900 s\) keeps the user's cached group membership until the next changed-users sync or another eviction/);
+  assert.match(text, /new sign-ins still pass the staff check and get staff web tokens[^.]*refreshable for up to 8 hours/);
+  assert.match(text, /exposure is up to about 8 hours plus that window/);
+  assert.match(text, /`fullSyncPeriod` 86400 s/);
+  assert.match(text, /An LDAP-only change never calls Keycloak, so the offboarding step[^.]*must log out the user's sessions in Keycloak \(`POST \/admin\/realms\/<realm>\/users\/\{id\}\/logout`\) or disable the user/);
+  const rules = comments("scripts/realm/service-client-rules.mjs");
+  assert.doesNotMatch(rules, /a user removed from a staff group keeps refreshing an existing staff web session until it ends/);
+  assert.match(rules, /keeps the cached membership until the next changed-users sync or another eviction/);
+  assert.match(rules, /must log the user out or disable them in Keycloak/);
+});
+
+// Review finding (major): the LDAP mapper allow-list is a static guarantee;
+// --live and --live-export do not read user storage providers.
+test("REALM_AS_CODE.md says the LDAP provider and its mappers are checked statically only, and names the refused role and group mappers", () => {
+  const text = gap5();
+  for (const m of ["`hardcoded-ldap-role-mapper`", "`role-ldap-mapper`", "`hardcoded-ldap-group-mapper`", "`groups.path` `/staff`", "`groups.ldap.filter` `(cn=fbx-*)`"]) {
+    assert.ok(text.includes(m), `gap (5) does not name ${m}`);
+  }
+  assert.match(text, /LDAP mapper integrity is a static guarantee only: `--live` and `--live-export` do not read the LDAP provider/);
+  assert.match(text, /legacy key `defaultRoles`/);
+  assert.match(text, /realm-file user/);
+  assert.match(paragraph("Live drift check."), /the LDAP provider and its mappers \(neither form reads user storage providers\)[^.]*checked statically only/);
+});
+
+// Review findings (minor): GET .../authentication/flows leaves out saml ecp
+// and a partial export lists orphan flows and configs; a flow aliased . or ..
+// cannot be read through the admin API.
+test("REALM_AS_CODE.md: the Live drift check names saml ecp, orphans, the . and .. aliases and the export's alias limit", () => {
+  const text = paragraph("Live drift check.");
+  assert.doesNotMatch(text, /executions` of every top-level flow with each subflow/);
+  assert.match(text, /`saml ecp` included \(`\.\.\.\/authentication\/flows` leaves it out\)/);
+  assert.match(text, /aliased `\.` or `\.\.`[^.]*error/);
+  assert.match(text, /orphan/);
+  assert.match(text, /shares its alias[^.]*fails `--live-export` only/);
+  assert.doesNotMatch(gap5(), /a config alias used twice anywhere in the realm/);
+});
+
 test("REALM_AS_CODE.md: prompt=none answers error=login_required, and only the page before the reset e-mail is the same for every username", () => {
   const text = gap5();
   assert.match(text, /`prompt=none`[^.]*`error=login_required`/);

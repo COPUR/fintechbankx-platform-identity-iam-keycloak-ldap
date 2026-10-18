@@ -59,6 +59,16 @@ const inRange = (v, max) => Number(v) > 0 && Number(v) <= max;
 
 export const ADMIN_PERMISSION_SCOPES = ["view-members", "manage-members"];
 
+// LDAP federation (Keycloak 26.7.5). Of its 12 stock LDAP mappers these four
+// give users roles or groups; the realm uses only the attribute mappers and
+// one group mapper. A custom SPI mapper is refused too (not on the list).
+const USER_STORAGE_PROVIDER = "org.keycloak.storage.UserStorageProvider";
+const LDAP_STORAGE_MAPPER = "org.keycloak.storage.ldap.mappers.LDAPStorageMapper";
+export const LDAP_ROLE_OR_GROUP_MAPPERS = ["hardcoded-ldap-role-mapper", "role-ldap-mapper", "hardcoded-ldap-group-mapper", "group-ldap-mapper"];
+export const LDAP_MAPPERS_ALLOWED = ["user-attribute-ldap-mapper", "group-ldap-mapper"];
+// Directory groups named cn=fbx-* only, imported flat under /staff.
+export const LDAP_GROUP_MAPPER_PINS = { "groups.path": "/staff", "groups.ldap.filter": "(cn=fbx-*)", "group.name.ldap.attribute": "cn", "preserve.group.inheritance": "false" };
+
 export function checkRealm({ realm, registry, adminPermissions = null, importEnv = null, importSecretKeys = null, importSecretRefs = null }) {
   const errors = [];
   const err = (m) => errors.push(m);
@@ -370,20 +380,46 @@ export function checkRealm({ realm, registry, adminPermissions = null, importEnv
     }
   }
 
-  // LDAP federation: read-only, credentials as placeholders, group mapper read-only.
-  const ldap = (realm.components?.["org.keycloak.storage.UserStorageProvider"] || []).find((c) => c.providerId === "ldap");
-  if (!ldap) {
-    err("LDAP user federation component missing");
-  } else {
+  // LDAP federation: one user storage provider, the LDAP provider, read-only,
+  // credentials as placeholders. Its mappers are on an allow-list
+  // (LDAP_MAPPERS_ALLOWED): a hardcoded role or group mapper would grant a
+  // fixed role or group to every federated user and a role mapper would map
+  // directory groups to roles, so neither is allowed; staff roles come only
+  // from the /staff/fbx-* groups of the one group mapper, which is read-only
+  // and pinned (LDAP_GROUP_MAPPER_PINS) so directory groups land only there.
+  // Static only: --live and --live-export do not read user storage providers.
+  const storage = realm.components?.[USER_STORAGE_PROVIDER] || [];
+  const ldaps = storage.filter((c) => c.providerId === "ldap");
+  for (const c of storage) if (c.providerId !== "ldap") err(`user storage provider ${c.name} (${c.providerId}) is not allowed; staff come only from the LDAP provider (another provider can give its users any role)`);
+  if (ldaps.length > 1) err(`LDAP providers: one allowed (found ${ldaps.length}: ${ldaps.map((c) => c.name).join(", ")})`);
+  for (const m of realm.components?.[LDAP_STORAGE_MAPPER] || []) err(`LDAP mapper ${m.name} (${m.providerId}) must sit under the LDAP provider (subComponents), not at the realm's top level`);
+  if (!ldaps.length) err("LDAP user federation component missing");
+  for (const ldap of ldaps) {
     const cfg = ldap.config || {};
     if (cfg.editMode?.[0] !== "READ_ONLY") err("LDAP editMode must be READ_ONLY");
     for (const k of ["connectionUrl", "bindDn", "bindCredential"]) {
       if (!PLACEHOLDER.test(cfg[k]?.[0] || "")) err(`LDAP ${k} must be a $(env:NAME) placeholder`);
     }
-    const mappers = ldap.subComponents?.["org.keycloak.storage.ldap.mappers.LDAPStorageMapper"] || [];
-    const gm = mappers.find((m) => m.providerId === "group-ldap-mapper");
-    if (!gm) err("LDAP group mapper missing");
-    else if (gm.config?.mode?.[0] !== "READ_ONLY") err("LDAP group mapper mode must be READ_ONLY");
+    const mappers = ldap.subComponents?.[LDAP_STORAGE_MAPPER] || [];
+    for (const m of mappers) {
+      if (LDAP_ROLE_OR_GROUP_MAPPERS.includes(m.providerId) && m.providerId !== "group-ldap-mapper") {
+        err(`LDAP mapper ${m.name} (${m.providerId}) grants roles or groups to federated users; staff roles come only from the /staff/fbx-* groups of the one group-ldap-mapper`);
+      } else if (!LDAP_MAPPERS_ALLOWED.includes(m.providerId)) {
+        err(`LDAP mapper ${m.name} (${m.providerId}) is not allowed (allowed: ${LDAP_MAPPERS_ALLOWED.join(", ")})`);
+      }
+    }
+    const gms = mappers.filter((m) => m.providerId === "group-ldap-mapper");
+    if (gms.length > 1) err(`LDAP group mappers: one allowed (found ${gms.length}: ${gms.map((m) => m.name).join(", ")})`);
+    if (!gms.length) err("LDAP group mapper missing");
+    for (const gm of gms) {
+      if (gm.config?.mode?.[0] !== "READ_ONLY") err("LDAP group mapper mode must be READ_ONLY");
+      for (const [k, want] of Object.entries(LDAP_GROUP_MAPPER_PINS)) {
+        const got = gm.config?.[k];
+        if (JSON.stringify(got) !== JSON.stringify([want])) err(`LDAP group mapper ${gm.name}: ${k} must be ${JSON.stringify([want])} (found ${JSON.stringify(got ?? null)}); directory groups land only in /staff/fbx-*`);
+      }
+    }
+  }
+  if (ldaps.length) {
     const staff = (realm.groups || []).find((g) => g.name === "staff");
     for (const [group, role] of Object.entries(STAFF_ROLE_GROUPS)) {
       const g = (staff?.subGroups || []).find((s) => s.name === group);

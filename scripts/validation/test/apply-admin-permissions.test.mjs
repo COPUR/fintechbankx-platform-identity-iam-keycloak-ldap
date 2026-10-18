@@ -174,6 +174,76 @@ test("scope mappings: a client of the realm file missing in Keycloak is an error
   await assert.rejects(reconcileScopeMappings({ fetch: f.fetch, baseUrl: BASE, token: "t", realm: { realm: "fintechbankx", scopeMappings: [{ client: "fintechbankx-web", roles: ["customer"] }] } }), /client fintechbankx-web not found/);
 });
 
+// Review finding (minor): with --realm <file> the scope mappings were
+// reconciled in that file's realm and the admin permissions written to the
+// spec's realm. The CLI now refuses (exit 2) before any request when the two
+// differ. Run as the Job runs it, against the fake admin API above served on a
+// local port, with routes that would let both steps write.
+async function runCli(routes, files) {
+  const os = await import("node:os");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const http = await import("node:http");
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const f = fakeFetch(routes);
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", async () => {
+      const body = chunks.length ? Buffer.concat(chunks).toString() : undefined;
+      const r = await f.fetch(`${BASE}${req.url}`, { method: req.method, headers: { "Content-Type": req.headers["content-type"], Authorization: req.headers.authorization }, body });
+      res.writeHead(r.status, { "content-type": "application/json" });
+      res.end(await r.text());
+    });
+  });
+  await new Promise((ok) => server.listen(0, "127.0.0.1", ok));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "admin-permissions-"));
+  try {
+    const args = [new URL("../../realm/apply-admin-permissions.mjs", import.meta.url).pathname];
+    for (const [flag, json] of files) {
+      const file = path.join(dir, `${flag.slice(2)}.json`);
+      fs.writeFileSync(file, JSON.stringify(json));
+      args.push(flag, file);
+    }
+    const env = { PATH: process.env.PATH, KEYCLOAK_URL: `http://127.0.0.1:${server.address().port}`, KEYCLOAK_CLIENTID: "boot", KEYCLOAK_CLIENTSECRET: "s" };
+    try {
+      const { stdout, stderr } = await promisify(execFile)(process.execPath, args, { env, encoding: "utf8" });
+      return { code: 0, stdout, stderr, f };
+    } catch (e) {
+      return { code: e.code, stdout: e.stdout, stderr: e.stderr, f };
+    }
+  } finally {
+    server.close();
+    fs.rmSync(dir, { recursive: true });
+  }
+}
+
+test("--realm naming another realm than the spec is refused (exit 2) before any request, so nothing is written", async () => {
+  const OTHER = `${BASE}/admin/realms/other`;
+  const routes = {
+    [`POST ${BASE}/realms/master/protocol/openid-connect/token`]: [200, { access_token: "t0k" }],
+    [`GET ${OTHER}/clients?clientId=fintechbankx-web`]: [200, [{ id: "web-uuid", clientId: "fintechbankx-web" }]],
+    [`GET ${OTHER}/clients/web-uuid/scope-mappings/realm`]: [200, [{ id: "r1", name: "customer" }, { id: "r2", name: "admin" }]],
+    [`DELETE ${OTHER}/clients/web-uuid/scope-mappings/realm`]: [204, undefined],
+    ...lookups,
+    [`GET ${RS}/policy?name=fbx-customer-service-client&first=0&max=100`]: [200, []],
+    [`GET ${RS}/policy?name=fbx-customers-customer-service&first=0&max=100`]: [200, []],
+    [`POST ${RS}/policy/client`]: [201, { id: "pol-1" }],
+    [`POST ${RS}/permission/scope`]: [201, { id: "perm-1" }]
+  };
+  const realmFile = { realm: "other", scopeMappings: [{ client: "fintechbankx-web", roles: ["customer"] }] };
+  const r = await runCli(routes, [["--spec", spec], ["--realm", realmFile]]);
+  assert.deepEqual(r.f.writes().map((c) => `${c.method} ${c.url}`), [], `writes sent: ${r.stdout}`);
+  assert.equal(r.code, 2, r.stdout + r.stderr);
+  assert.match(r.stderr, /admin-permissions: --realm file is realm other but the spec is realm fintechbankx/);
+  assert.deepEqual(r.f.calls, []);
+  // The same realm in both: both steps run.
+  const ok = await runCli(routes, [["--spec", spec], ["--realm", { ...realmFile, realm: "fintechbankx" }]]);
+  assert.equal(ok.code, 1, ok.stdout + ok.stderr); // the fake answers realm other only
+  assert.match(ok.stderr, /GET .*\/admin\/realms\/fintechbankx\/clients\?clientId=fintechbankx-web -> 404/);
+});
+
 test("realm import Job: last step onboards the TPP list and fails on any non-conforming open-finance-tpp client or service-client rule, with only the bootstrap admin credential", async () => {
   const fs = await import("node:fs");
   const YAML = (await import("yaml")).default;

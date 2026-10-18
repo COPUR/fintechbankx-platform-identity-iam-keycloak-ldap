@@ -18,6 +18,7 @@
 // No dependencies beyond Node 22 (global fetch).
 //
 // usage: node apply-admin-permissions.mjs --spec <admin-permissions.json> [--realm <realm.json>]
+//        (the realm file must name the spec's realm, else exit 2 before any request)
 // env:   KEYCLOAK_URL, KEYCLOAK_LOGINREALM (default master),
 //        KEYCLOAK_GRANTTYPE client_credentials (default) with
 //        KEYCLOAK_CLIENTID + KEYCLOAK_CLIENTSECRET, or password with
@@ -184,11 +185,18 @@ if (isMain) {
   }
   try {
     const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+    const realmPath = arg("--realm");
+    const realm = realmPath ? JSON.parse(fs.readFileSync(realmPath, "utf8")) : undefined;
+    // Scope mappings are reconciled in the realm file's realm, the admin
+    // permissions written to the spec's: both must name one realm, checked
+    // before the first request.
+    if (realm && realm.realm !== spec.realm) {
+      console.error(`admin-permissions: --realm file is realm ${realm.realm} but the spec is realm ${spec.realm}; both steps must change one realm (nothing was changed)`);
+      process.exit(2);
+    }
     const token = await fetchAdminToken();
     const out = (m) => console.log(`admin-permissions: ${m}`);
-    const realmPath = arg("--realm");
-    if (realmPath) {
-      const realm = JSON.parse(fs.readFileSync(realmPath, "utf8"));
+    if (realm) {
       const removed = await reconcileScopeMappings({ baseUrl: process.env.KEYCLOAK_URL, token, realm, log: out });
       out(`scope mappings reconciled (${removed.length} client(s) narrowed)`);
     }

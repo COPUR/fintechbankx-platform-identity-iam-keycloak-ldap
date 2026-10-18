@@ -80,6 +80,60 @@ test("LDAP federation must stay read-only", () => {
   assert.ok(checkRealm(input).some((e) => e.includes("READ_ONLY")));
 });
 
+// Review finding (major): the gate looked up the first group-ldap-mapper only,
+// so a hardcoded-ldap-role-mapper (a fixed realm role for every federated
+// user), a role-ldap-mapper granting a staff role or a second group mapper
+// passed. One LDAP provider, its mappers on an allow-list (the attribute
+// mappers and one read-only group mapper), and the group mapper pinned so
+// LDAP groups land only in /staff/fbx-*. Static only: --live and
+// --live-export do not read user storage providers.
+const USER_STORAGE = "org.keycloak.storage.UserStorageProvider";
+const LDAP_MAPPER = "org.keycloak.storage.ldap.mappers.LDAPStorageMapper";
+const ldapMappers = (r) => r.components[USER_STORAGE][0].subComponents[LDAP_MAPPER];
+const staffGroupMapper = (r) => ldapMappers(r).find((m) => m.name === "staff-groups");
+const ldapMapper = (name, providerId, config) => ({ name, providerId, subComponents: {}, config });
+const grantsRoles = (name, providerId) => `LDAP mapper ${name} (${providerId}) grants roles or groups to federated users`;
+const groupMapperPin = (key, want) => `LDAP group mapper staff-groups: ${key} must be ${JSON.stringify([want])}`;
+
+test("LDAP: only user-attribute mappers and one read-only group mapper landing in /staff/fbx-*; role- and group-granting mappers are refused", () => {
+  assert.deepEqual([...new Set(ldapMappers(fresh().realm).map((m) => m.providerId))].sort(), ["group-ldap-mapper", "user-attribute-ldap-mapper"]);
+  const cases = [
+    ["a hardcoded role mapper granting banker", (r) => ldapMappers(r).push(ldapMapper("every-user-banker", "hardcoded-ldap-role-mapper", { role: ["banker"] })),
+      grantsRoles("every-user-banker", "hardcoded-ldap-role-mapper")],
+    ["a role mapper", (r) => ldapMappers(r).push(ldapMapper("directory-roles", "role-ldap-mapper", { "roles.dn": ["ou=roles,dc=fintechbankx,dc=internal"], "role.name.ldap.attribute": ["cn"], "use.realm.roles.mapping": ["true"], mode: ["READ_ONLY"] })),
+      grantsRoles("directory-roles", "role-ldap-mapper")],
+    ["a hardcoded group mapper", (r) => ldapMappers(r).push(ldapMapper("every-user-admin", "hardcoded-ldap-group-mapper", { group: ["/staff/fbx-admin"] })),
+      grantsRoles("every-user-admin", "hardcoded-ldap-group-mapper")],
+    ["a second group mapper", (r) => ldapMappers(r).push({ ...structuredClone(staffGroupMapper(r)), name: "more-groups" }),
+      "LDAP group mappers: one allowed (found 2: staff-groups, more-groups)"],
+    ["a custom SPI mapper", (r) => ldapMappers(r).push(ldapMapper("custom", "fbx-custom-ldap-mapper", {})),
+      "LDAP mapper custom (fbx-custom-ldap-mapper) is not allowed"],
+    ["a full name mapper", (r) => ldapMappers(r).push(ldapMapper("full name", "full-name-ldap-mapper", { "ldap.full.name.attribute": ["cn"] })),
+      "LDAP mapper full name (full-name-ldap-mapper) is not allowed"],
+    ["groups imported to the root", (r) => { staffGroupMapper(r).config["groups.path"] = ["/"]; }, groupMapperPin("groups.path", "/staff")],
+    ["every directory group", (r) => { staffGroupMapper(r).config["groups.ldap.filter"] = ["(cn=*)"]; }, groupMapperPin("groups.ldap.filter", "(cn=fbx-*)")],
+    ["group names from another attribute", (r) => { staffGroupMapper(r).config["group.name.ldap.attribute"] = ["description"]; }, groupMapperPin("group.name.ldap.attribute", "cn")],
+    ["nested directory groups", (r) => { staffGroupMapper(r).config["preserve.group.inheritance"] = ["true"]; }, groupMapperPin("preserve.group.inheritance", "false")],
+    ["group mapper missing", (r) => { r.components[USER_STORAGE][0].subComponents[LDAP_MAPPER] = ldapMappers(r).filter((m) => m.providerId !== "group-ldap-mapper"); }, "LDAP group mapper missing"],
+    ["a second LDAP provider with a hardcoded role mapper", (r) => r.components[USER_STORAGE].push({ name: "second-directory", providerId: "ldap", config: structuredClone(r.components[USER_STORAGE][0].config),
+      subComponents: { [LDAP_MAPPER]: [ldapMapper("every-user-admin", "hardcoded-ldap-role-mapper", { role: ["admin"] })] } }),
+      "LDAP providers: one allowed (found 2: fbx-directory, second-directory)"],
+    ["the role mapper of a second LDAP provider", (r) => r.components[USER_STORAGE].push({ name: "second-directory", providerId: "ldap", config: structuredClone(r.components[USER_STORAGE][0].config),
+      subComponents: { [LDAP_MAPPER]: [ldapMapper("every-user-admin", "hardcoded-ldap-role-mapper", { role: ["admin"] })] } }),
+      grantsRoles("every-user-admin", "hardcoded-ldap-role-mapper")],
+    ["another user storage provider", (r) => r.components[USER_STORAGE].push({ name: "corp-kerberos", providerId: "kerberos", subComponents: {}, config: {} }),
+      "user storage provider corp-kerberos (kerberos) is not allowed"],
+    ["an LDAP mapper at the realm's top level", (r) => { r.components[LDAP_MAPPER] = [ldapMapper("top-banker", "hardcoded-ldap-role-mapper", { role: ["banker"] })]; },
+      "LDAP mapper top-banker (hardcoded-ldap-role-mapper) must sit under the LDAP provider"]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const input = fresh();
+    mutate(input.realm);
+    const errors = checkRealm(input);
+    assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+});
+
 test("the import Job reads each credential from <env>/<service-slug>/oidc-client", () => {
   const input = fresh();
   input.importSecretRefs[secretEnvName("svc-cus-profile-kyc")] = "ENVIRONMENT/customer/oidc-client";
@@ -556,6 +610,7 @@ test("DCR: registration policies are declared; anonymous closed, TPP scopes and 
 // them. admin-cli and security-admin-console are created by Keycloak 26.7.5
 // with fullScopeAllowed=true and lightweight access tokens (no aud).
 const LIVE_ENV = { KEYCLOAK_URL: "http://kc.test", KEYCLOAK_CLIENTID: "x", KEYCLOAK_CLIENTSECRET: "y" };
+const SAML_ECP = "saml ecp";
 const LIGHTWEIGHT = "client.use.lightweight.access.token.enabled";
 function liveRealm() {
   const { realm } = fresh();
@@ -566,9 +621,13 @@ function liveRealm() {
   builtIn.push({ clientId: "admin-permissions", fullScopeAllowed: false, serviceAccountsEnabled: true, authorizationServicesEnabled: true, attributes: { realm_client: "false" },
     authorizationSettings: { policyEnforcementMode: "ENFORCING", decisionStrategy: "UNANIMOUS", resources: [], policies: [], scopes: [] }, protocolMappers: [], defaultClientScopes: ["basic", "roles"], optionalClientScopes: [] });
   // Keycloak's built-in browser flow (26.7.5, as the admin API lists it); the
-  // export and the admin API name a client's flow override by flow id.
+  // export and the admin API name a client's flow override by flow id. And
+  // its built-in flow saml ecp, which a partial export lists and GET
+  // /authentication/flows leaves out (adminApi below).
   const builtInFlows = [{ alias: "browser", description: "Browser based authentication", providerId: "basic-flow", topLevel: true, builtIn: true,
-    authenticationExecutions: [{ authenticator: "auth-cookie", authenticatorFlow: false, requirement: "ALTERNATIVE", priority: 10, userSetupAllowed: false }] }];
+    authenticationExecutions: [{ authenticator: "auth-cookie", authenticatorFlow: false, requirement: "ALTERNATIVE", priority: 10, userSetupAllowed: false }] },
+  { alias: SAML_ECP, description: "SAML ECP Profile Authentication Flow", providerId: "basic-flow", topLevel: true, builtIn: true,
+    authenticationExecutions: [{ authenticator: "http-basic-authenticator", authenticatorFlow: false, requirement: "REQUIRED", priority: 10, userSetupAllowed: false }] }];
   const flows = [...realm.authenticationFlows, ...builtInFlows].map((f) => ({ id: `id-${f.alias}`, ...f }));
   const flowId = (alias) => flows.find((f) => f.alias === alias)?.id ?? alias;
   const builtInScopes = [
@@ -654,7 +713,10 @@ function adminApi(live) {
     if (p === "") return json({ realm: "fintechbankx", resetCredentialsFlow: live.resetCredentialsFlow, registrationAllowed: live.registrationAllowed, defaultRole: live.defaultRole });
     if (p === "/identity-provider/instances") return json(live.identityProviders || []);
     if (p === "/roles") return json(live.roles.realm.map((r) => roleRep(null, r)));
-    if (p === "/authentication/flows") return json(live.authenticationFlows.filter((f) => f.topLevel));
+    // Keycloak 26.7.5 lists the top-level flows but saml ecp
+    // (AuthenticationManagementResource.getFlows); its executions are still
+    // read by alias below.
+    if (p === "/authentication/flows") return json(live.authenticationFlows.filter((f) => f.topLevel && f.alias !== SAML_ECP));
     let m = p.match(/^\/authentication\/flows\/([^/]+)\/executions$/);
     if (m) {
       const f = live.authenticationFlows.find((x) => x.alias === decodeURIComponent(m[1]));
@@ -1080,8 +1142,8 @@ test("the gate refuses staff web without the staff flow, and any flow that lets 
     ["marker scope with a mapper", (r) => { r.clientScopes.find((x) => x.name === MARKER).protocolMappers = [{ name: "x", protocol: "openid-connect", protocolMapper: "oidc-hardcoded-claim-mapper", config: { "claim.name": "x", "claim.value": "y" } }]; },
       `client scope ${MARKER}: must have no protocol mappers`],
     ["self-registration on", (r) => { r.registrationAllowed = true; }, "realm: registrationAllowed must be false"],
-    // Jackson trims and reads "true" in any case as true; anything but false,
-    // absent or "false" is refused.
+    // Jackson trims and reads "true", "True" and "TRUE" as true; anything but
+    // false, absent or a string Jackson reads as false is refused.
     ...[" true", "TRUE", "True ", 1, "yes", "", null].map((v) => [`registrationAllowed ${JSON.stringify(v)}`, (r) => { r.registrationAllowed = v; }, "realm: registrationAllowed must be false"]),
     ["executions listed out of priority order", (r) => { flowOf(r, `${STAFF_FLOW} OTP`).authenticationExecutions.reverse(); },
       `flow ${STAFF_FLOW} OTP: executions are not listed in priority order`],
@@ -1104,6 +1166,24 @@ test("the gate refuses staff web without the staff flow, and any flow that lets 
   flowOf(byId.realm, STAFF_FLOW).id = "4d2f3c1e-0000-4000-8000-000000000001";
   client(byId, STAFF_WEB).authenticationFlowBindingOverrides = { browser: "4d2f3c1e-0000-4000-8000-000000000001" };
   assert.deepEqual(checkRealm(byId), []);
+});
+
+// Review finding (minor): Jackson (Keycloak 26.7.5 and keycloak-config-cli
+// 6.5.1) reads a JSON string as a Boolean only as true, True, TRUE, false,
+// False or FALSE after Java's trim (characters up to U+0020); any other case
+// or padding fails the import. The gate passed "fAlse", which the import
+// rejects; it now passes only the spellings Jackson reads as false.
+test("registrationAllowed: only false, absent or a string Jackson reads as false passes", () => {
+  for (const v of ["fAlse", " fAlSe ", "FALSe", "\u00a0false", "false\u2003"]) {
+    const input = fresh();
+    input.realm.registrationAllowed = v;
+    assert.ok(checkRealm(input).some((e) => e.startsWith("realm: registrationAllowed must be false")), `registrationAllowed ${JSON.stringify(v)} passed`);
+  }
+  for (const v of [false, undefined, "false", "False", "FALSE", " FALSE ", "\tfalse\n", "\u0001False\u0020"]) {
+    const input = fresh();
+    input.realm.registrationAllowed = v;
+    assert.deepEqual(checkRealm(input), [], `registrationAllowed ${JSON.stringify(v)}`);
+  }
 });
 
 test("live: staff web's sign-in flow, the same through the admin API and a partial export", async () => {
@@ -1226,6 +1306,73 @@ test("a staff role is refused in another role's composites, in the default role 
   }
 });
 
+// Review finding (major): Keycloak 26.7.5 still reads the legacy
+// RealmRepresentation field defaultRoles, and each client's defaultRoles,
+// when the realm file has no defaultRole: it adds those roles to the default
+// role default-roles-<realm>, which every user holds
+// (DefaultExportImportManager.convertDeprecatedDefaultRoles). "defaultRoles":
+// ["auditor"] passed the gate and let every user through the staff check.
+const legacyDefaultRoles = (holder) => `${holder}: legacy key defaultRoles is not allowed`;
+
+test("the legacy defaultRoles key is refused on the realm and on any client of the realm file", () => {
+  const cases = [
+    ["realm defaultRoles [auditor]", (r) => { r.defaultRoles = ["auditor"]; }, legacyDefaultRoles("realm")],
+    ["realm defaultRoles []", (r) => { r.defaultRoles = []; }, legacyDefaultRoles("realm")],
+    ["client defaultRoles on fintechbankx-web", (r) => { client({ realm: r }, "fintechbankx-web").defaultRoles = ["bundle"]; }, legacyDefaultRoles("fintechbankx-web")]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const input = fresh();
+    mutate(input.realm);
+    const errors = checkRealm(input);
+    assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+});
+
+// Review finding (minor): "staff roles reach users only through the LDAP
+// groups /staff/fbx-*" held for groups and roles but not for the users of the
+// realm file: a user with realmRoles ["admin"] passed. A realm-file user other
+// than a service account holds no staff role, directly, through a client
+// role's composites or through any group (/staff/fbx-* included: realm-file
+// users are local, not from the directory).
+const userHoldsStaff = (user, staffRole) => `user ${user} holds staff role ${staffRole}`;
+
+test("a realm-file user other than a service account holds no staff role: directly, through a client role's composites or through a group", () => {
+  const user = (username, extra) => ({ username, enabled: true, realmRoles: [], clientRoles: {}, groups: [], ...extra });
+  const cases = [
+    ["a staff realm role", (r) => r.users.push(user("alice", { realmRoles: ["admin"] })), userHoldsStaff("alice", "admin")],
+    ["a client role reaching banker", (r) => {
+      r.roles.client = { "fintechbankx-web": [{ name: "bundle", composite: true, clientRole: true, composites: { realm: ["banker"] } }] };
+      r.users.push(user("bob", { clientRoles: { "fintechbankx-web": ["bundle"] } }));
+    }, userHoldsStaff("bob", "banker")],
+    ["a realm role reaching compliance_officer", (r) => {
+      Object.assign(realmRoleOf(r, "customer"), { composite: true, composites: { realm: ["compliance_officer"] } });
+      r.users.push(user("frank", { realmRoles: ["customer"] }));
+    }, userHoldsStaff("frank", "compliance_officer")],
+    ["a staff group", (r) => r.users.push(user("carol", { groups: ["/staff/fbx-auditor"] })), userHoldsStaff("carol", "auditor")],
+    ["a group outside /staff/fbx-* reaching loan_officer", (r) => {
+      r.groups.push({ name: "ops", path: "/ops", realmRoles: ["loan_officer"], attributes: {}, subGroups: [] });
+      r.users.push(user("dave", { groups: ["/ops"] }));
+    }, userHoldsStaff("dave", "loan_officer")],
+    ["a subgroup of a group granting admin", (r) => {
+      r.groups.push({ name: "ops", path: "/ops", realmRoles: ["admin"], attributes: {}, subGroups: [{ name: "night", path: "/ops/night", realmRoles: [], attributes: {}, subGroups: [] }] });
+      r.users.push(user("erin", { groups: ["/ops/night"] }));
+    }, userHoldsStaff("erin", "admin")]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const input = fresh();
+    mutate(input.realm);
+    const errors = checkRealm(input);
+    assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+  // A customer in /customers and the service accounts pass.
+  const ok = fresh();
+  ok.realm.users.push(user("cust1", { realmRoles: ["customer"], groups: ["/customers"] }));
+  assert.deepEqual(checkRealm(ok), []);
+  const sa = fresh();
+  sa.realm.users.find((u) => u.serviceAccountClientId === "svc-cus-profile-kyc").realmRoles.push("auditor");
+  assert.deepEqual(checkRealm(sa).filter((e) => e.startsWith("user ")), []);
+});
+
 test("live: a staff role in another role's composites or in the default role is refused, the same through the admin API and a partial export", async () => {
   const cases = [
     ...STAFF_ROLE_ROUTES,
@@ -1270,6 +1417,107 @@ test("live: a config of another flow that reuses a staff config's alias is refus
   for (const p of ["/authentication/flows/rv%20copy/executions", "/authentication/flows/browser/executions", `/authentication/config/${encodeURIComponent("id-rv copy config")}`]) {
     assert.ok(api.urls.includes(`http://kc.test/admin/realms/fintechbankx${p}`), `${p} not fetched: ${api.urls.join(" ")}`);
   }
+});
+
+// Review finding (minor): GET /authentication/flows (Keycloak 26.7.5) leaves
+// out the top-level flow saml ecp, and --live read configs only through the
+// executions of the listed flows, while a partial export lists every flow and
+// every config, orphans included. Both views now hold the same: the
+// top-level flows the admin API lists, and the subflows and configs named by
+// the executions of every top-level flow, saml ecp included (read by alias).
+const notUnique = (alias) => `flow ${STAFF_FLOW}: authenticator config alias ${alias} is not unique`;
+const liveFlowOf = (l, alias) => l.authenticationFlows.find((f) => f.alias === alias);
+
+test("live: --live and --live-export read the same flows and configs (saml ecp, orphan configs and flows, a subflow used twice)", async () => {
+  assert.deepEqual(await liveErrors(liveRealm()), []);
+  const cases = [
+    ["a config in saml ecp that reuses a staff config's alias", (l) => {
+      liveFlowOf(l, SAML_ECP).authenticationExecutions[0].authenticatorConfig = `${STAFF_FLOW} not banker`;
+      liveFlowOf(l, SAML_ECP).authenticationExecutions[0].configId = "id-saml config";
+      l.authenticatorConfig.push({ id: "id-saml config", alias: `${STAFF_FLOW} not banker`, config: { condUserRole: "customer", negate: "false" } });
+    }, [notUnique(`${STAFF_FLOW} not banker`)]],
+    ["a config in saml ecp with an alias of its own", (l) => {
+      liveFlowOf(l, SAML_ECP).authenticationExecutions[0].authenticatorConfig = "saml basic";
+      l.authenticatorConfig.push({ id: "id-saml basic", alias: "saml basic", config: {} });
+    }, []],
+    ["an orphan config with an alias of its own", (l) => { l.authenticatorConfig.push({ id: "id-orphan", alias: "orphan", config: { condUserRole: "customer" } }); }, []],
+    ["the staff browser flow no longer top-level (an orphan subflow)", (l) => { liveFlowOf(l, STAFF_FLOW).topLevel = false; }, [overrideRefused, `flow ${STAFF_FLOW} missing`]],
+    ["a staff subflow also used by another top-level flow", (l) => {
+      l.authenticationFlows.push({ id: "id-rv share", alias: "rv share", description: "share", providerId: "basic-flow", topLevel: true, builtIn: false,
+        authenticationExecutions: [{ authenticatorFlow: true, flowAlias: `${STAFF_FLOW} OTP`, requirement: "CONDITIONAL", priority: 10, userSetupAllowed: false }] });
+    }, []]
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const live = liveRealm();
+    mutate(live);
+    const errors = await liveErrors(live);
+    for (const e of expected) assert.ok(errors.some((x) => x.startsWith(e)), `${name}: ${e} not in\n${errors.join("\n")}`);
+    if (!expected.length) assert.deepEqual(errors, [], name);
+  }
+  // --live reads saml ecp's executions by alias although GET
+  // /authentication/flows does not list it.
+  const api = adminApi(liveRealm());
+  await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
+  assert.ok(api.urls.includes("http://kc.test/admin/realms/fintechbankx/authentication/flows/saml%20ecp/executions"), api.urls.join(" "));
+});
+
+// Known limit: the export names a config by alias in the flow representation,
+// so an orphan config that shares its alias with a config an execution uses
+// cannot be told apart from it; --live-export refuses the alias as not unique,
+// --live reads configs by id and never sees the orphan.
+test("live: known limit: an orphan config that reuses a staff config's alias fails --live-export only", async () => {
+  const live = liveRealm();
+  live.authenticatorConfig.push({ id: "id-orphan banker", alias: `${STAFF_FLOW} not banker`, config: { condUserRole: "customer", negate: "false" } });
+  const viaApi = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: adminApi(live).fetch });
+  assert.deepEqual(viaApi.errors, []);
+  const viaFile = (await liveFromFile(live)).errors;
+  assert.ok(viaFile.includes(notUnique(`${STAFF_FLOW} not banker`)), viaFile.join("\n"));
+});
+
+// Review finding (minor): a top-level flow aliased . or .. made --live request
+// /authentication/flows/./executions, which the URL parser collapses, so
+// every --live and --verify-live run failed. Both modes report it by name.
+test("live: a top-level flow aliased . or .. is named as an error in both modes, never requested", async () => {
+  for (const alias of [".", ".."]) {
+    const live = liveRealm();
+    live.authenticationFlows.push({ id: `id-dots-${alias.length}`, alias, description: "dots", providerId: "basic-flow", topLevel: true, builtIn: false,
+      authenticationExecutions: [{ authenticator: "auth-cookie", authenticatorFlow: false, requirement: "ALTERNATIVE", priority: 10, userSetupAllowed: false }] });
+    const errors = await liveErrors(live);
+    assert.deepEqual(errors, [`flow alias ${JSON.stringify(alias)} cannot be read through the admin API (URL paths collapse . and .. segments); rename it`], alias);
+    const api = adminApi(live);
+    await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch: api.fetch });
+    assert.ok(!api.urls.some((u) => u.endsWith(`/authentication/flows/${alias}/executions`)), api.urls.join(" "));
+  }
+});
+
+// Review finding (minor): nothing pinned the composite cycle guard of
+// fetchLiveView. A composite realm role and a composite client role that
+// reach each other: checkLive finishes, both modes give the same errors, and
+// --live reads each role's composites once. The fake answers a second read of
+// one roles-by-id URL with 500, so without the guard the test fails instead of
+// looping.
+test("live: a composite realm role and a composite client role that reach each other are read once each, the same through the admin API and a partial export", { timeout: 20000 }, async () => {
+  const live = liveRealm();
+  live.roles.client["fintechbankx-web"] = [{ name: "bundle", composite: true, clientRole: true, composites: { realm: ["customer", "banker"] } }];
+  Object.assign(realmRoleOf(live, "customer"), { composite: true, composites: { client: { "fintechbankx-web": ["bundle"] } } });
+  const api = adminApi(live);
+  const counted = new Map();
+  const fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes("/roles-by-id/")) {
+      counted.set(u, (counted.get(u) || 0) + 1);
+      if (counted.get(u) > 1) return new Response("read twice", { status: 500 });
+    }
+    return api.fetch(url, init);
+  };
+  const viaApi = await realmCheck.checkLive({ argv: ["node", "check-realm.mjs", "--live"], env: LIVE_ENV, fetch });
+  const viaFile = await liveFromFile(live);
+  assert.deepEqual(viaApi.errors, viaFile.errors);
+  assert.equal(viaApi.errors.length, 1, viaApi.errors.join("\n"));
+  assert.ok(viaApi.errors[0].startsWith(viaComposite("customer", "banker")), viaApi.errors[0]);
+  const R = "http://kc.test/admin/realms/fintechbankx/roles-by-id";
+  for (const id of ["id-customer", "id-fintechbankx-web-role-bundle", "id-default-roles-fintechbankx"]) assert.equal(counted.get(`${R}/${id}/composites`), 1, id);
+  assert.ok([...counted.values()].every((n) => n === 1), JSON.stringify([...counted]));
 });
 
 // The staff SSO client (svc-obs-grafana) is a registry client like the

@@ -12,7 +12,7 @@ Staff authenticate against a directory; Keycloak federates it read-only and maps
 | `fbx-auditor` | `/staff/fbx-auditor` | `auditor` |
 | `fbx-compliance-officer` | `/staff/fbx-compliance-officer` | `compliance_officer` |
 
-Mappers in `realm/fintechbankx-realm.json` (provider `fbx-directory`): username, first name, last name, email (all read-only) and `staff-groups` (`group-ldap-mapper`, `READ_ONLY`, filter `(cn=fbx-*)` so only these groups are imported, membership attribute `member` by DN). Only the connection and schema values differ per environment; they are `$(env:LDAP_*)` placeholders filled from ConfigMap `keycloak-realm-import-env`.
+Mappers in `realm/fintechbankx-realm.json` (provider `fbx-directory`): username, first name, last name, email (all read-only) and `staff-groups` (`group-ldap-mapper`, `READ_ONLY`, filter `(cn=fbx-*)` so only these groups are imported, membership attribute `member` by DN). Only the connection and schema values differ per environment; they are `$(env:LDAP_*)` placeholders filled from ConfigMap `keycloak-realm-import-env`. `check-realm.mjs` refuses a second user storage provider, any other mapper (a role or hardcoded role or group mapper above all), a second group mapper, and a group mapper whose path, filter, name attribute or nesting differs; it checks the realm file only, not a running Keycloak (see `REALM_AS_CODE.md`, gap 5).
 
 ## dev and staging: in-cluster OpenLDAP
 

@@ -280,7 +280,10 @@ export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c
 // default role default-roles-<realm>, which every user holds, so the gate
 // refuses a staff role in the composites (at any depth, through client roles
 // too) of any other realm role or of the default role, and, in the realm file,
-// on any group outside /staff/fbx-*.
+// on any group outside /staff/fbx-* and on any user but a service account, and
+// the legacy key defaultRoles. The LDAP provider and its mappers (no role or
+// group mapper but the one group mapper into /staff/fbx-*) are checked in
+// scripts/ci/check-realm.mjs, statically only.
 //
 // "Forgot password" ends in a sign-in to the client it started from, through
 // the realm's reset credentials flow, which no client override reaches (a
@@ -295,8 +298,12 @@ export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c
 // alike get the e-mail, so the staff check adds nothing observable before the
 // link (Keycloak's built-in e-mail step still answers more slowly when it
 // sends a mail). The check runs at sign-in only: a refresh does not check
-// roles again, so a user removed from a staff group keeps refreshing an
-// existing staff web session until it ends. Self-registration
+// roles again, so a session started with a staff role keeps refreshing until
+// it ends (8 h at most). A staff group removed in the directory alone never
+// calls Keycloak: the LDAP provider (cachePolicy DEFAULT) keeps the cached
+// membership until the next changed-users sync or another eviction, and new
+// sign-ins pass the staff check until then. Offboarding must log the user out
+// or disable them in Keycloak (REALM_AS_CODE.md, gap 5). Self-registration
 // and identity providers would sign users in through flows without the
 // check, and direct grant through the realm's direct grant flow, so the realm
 // allows neither and staff channel clients keep direct grant off.
@@ -420,25 +427,49 @@ export function staffSignInErrors(realm, registry) {
         : `realm role ${r.name} reaches staff role ${s} through its composites; staff roles come only from the /staff/fbx-* groups, and every user who holds ${r.name} passes the staff check`);
     }
   }
-  // Groups: the realm file only (the live views carry none).
-  const groupErrors = (gs, parent = "") => {
+  // The legacy RealmRepresentation and ClientRepresentation key defaultRoles:
+  // when the realm file has no defaultRole, Keycloak 26.7.5 adds those roles
+  // (a client's: its client roles, created if missing) to the default role,
+  // which every user holds (convertDeprecatedDefaultRoles), so the reach of
+  // the default role above would miss them. Only a realm file carries the key
+  // (Keycloak's export and admin API give defaultRole); it is refused.
+  const legacy = "legacy key defaultRoles is not allowed: Keycloak adds these roles to the default role, which every user holds, so with a staff role among them every user passes the staff check; use defaultRole";
+  if (Object.hasOwn(realm, "defaultRoles")) errs.add(`realm: ${legacy}`);
+  for (const c of realm.clients || []) if (Object.hasOwn(c, "defaultRoles")) errs.add(`${c.clientId}: ${legacy}`);
+  // Groups and users: the realm file only (the live views carry neither).
+  const roleSeeds = (x) => [...(x.realmRoles || []).map((n) => [null, n]), ...Object.entries(x.clientRoles || {}).flatMap(([id, ns]) => (ns || []).map((n) => [id, n]))];
+  const groupSeeds = new Map(); // path -> role seeds of the group and its parents
+  const groupErrors = (gs, parent = "", inherited = []) => {
     for (const g of gs || []) {
       const p = g.path || `${parent}/${g.name}`;
       if (!/^\/staff\/fbx-[^/]+$/.test(p)) {
-        const seeds = [...(g.realmRoles || []).map((n) => [null, n]), ...Object.entries(g.clientRoles || {}).flatMap(([id, ns]) => (ns || []).map((n) => [id, n]))];
-        for (const s of staffReached(seeds)) errs.add(`group ${p} grants staff role ${s}, directly or through composites; staff roles come only from the /staff/fbx-* groups`);
+        for (const s of staffReached(roleSeeds(g))) errs.add(`group ${p} grants staff role ${s}, directly or through composites; staff roles come only from the /staff/fbx-* groups`);
       }
-      groupErrors(g.subGroups, p);
+      groupSeeds.set(p, [...inherited, ...roleSeeds(g)]);
+      groupErrors(g.subGroups, p, groupSeeds.get(p));
     }
   };
   groupErrors(realm.groups);
+  // A user of the realm file is a local user, not one of the directory, so it
+  // holds no staff role: not directly, not through composites, not through any
+  // group or its parents (/staff/fbx-* included). Service accounts (users with
+  // serviceAccountClientId) are left out: Keycloak's authentication refuses
+  // them as browser users.
+  for (const u of realm.users || []) {
+    if (u.serviceAccountClientId) continue;
+    const seeds = [...roleSeeds(u), ...(u.groups || []).flatMap((p) => groupSeeds.get(p) || [])];
+    for (const s of staffReached(seeds)) errs.add(`user ${u.username} holds staff role ${s}, directly, through composites or through a group; staff roles come only from the directory's /staff/fbx-* groups, never from a realm-file user`);
+  }
   if (realm.resetCredentialsFlow !== STAFF_RESET_FLOW) {
     errs.add(`realm: resetCredentialsFlow must be the flow ${STAFF_RESET_FLOW} (got ${JSON.stringify(realm.resetCredentialsFlow ?? "none")}); with another flow "forgot password" signs any user in to a staff channel client`);
   }
-  // Jackson reads a trimmed "true" in any case as true: only false, absent or
-  // "false" (trimmed, any case) pass.
+  // Jackson (Keycloak 26.7.5 and keycloak-config-cli 6.5.1) reads a JSON
+  // string as a Boolean only after Java's trim (characters up to U+0020) and
+  // only as true, True or TRUE, false, False or FALSE; any other spelling
+  // ("tRue", "fAlse") fails the import. Only false, absent or a string Jackson
+  // reads as false pass.
   const v = realm.registrationAllowed;
-  if (!(v === false || v === undefined || (typeof v === "string" && v.trim().toLowerCase() === "false"))) {
+  if (!(v === false || v === undefined || (typeof v === "string" && ["false", "False", "FALSE"].includes(v.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, ""))))) {
     errs.add("realm: registrationAllowed must be false (self-registration signs the new user in to the client it started from, staff web included, without the staff check)");
   }
   for (const idp of realm.identityProviders || []) {
