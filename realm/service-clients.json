@@ -104,7 +104,7 @@
         "svc-cus-profile-kyc"
       ],
       "audienceProvenance": {
-        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (risk reads GET /api/v1/customers/{id}/credit for loan eligibility)"
+        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (risk reads GET /api/v1/customers/{id}/credit for loan eligibility; customer SERVICE_CALLERS)"
       }
     },
     {
@@ -118,7 +118,7 @@
         "svc-cus-profile-kyc"
       ],
       "audienceProvenance": {
-        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (compliance reads GET /api/v1/customers/{id}, name and KYC status, for sanctions and PEP screening)"
+        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (compliance reads GET /api/v1/customers/{id}, name and KYC status, and GET /api/v1/customers/{id}/kyc-status, for sanctions and PEP screening; customer SERVICE_CALLERS_PROFILE and SERVICE_CALLERS_KYC)"
       }
     },
     {

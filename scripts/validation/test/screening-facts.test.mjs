@@ -54,7 +54,7 @@ test("the audience table says the callees still have to admit the new callers", 
   const doc = readFileSync(path.join(root, "docs/identity/REALM_AS_CODE.md"), "utf8");
   const note = doc.split("\n").find((l) => l.includes("Screening-facts callers"));
   assert.ok(note, "a note on the screening-facts callers follows the audience table");
-  for (const s of ["svc-rsk-decisioning", "svc-cmp-evidence", "svc-ln-loan-lifecycle", "SERVICE_CALLERS", "GET /api/v1/customers/{id}", "POST /api/v1/risk/loan-eligibility"]) {
+  for (const s of ["svc-rsk-decisioning", "svc-cmp-evidence", "svc-ln-loan-lifecycle", "SERVICE_CALLERS", "SERVICE_CALLERS_PROFILE", "SERVICE_CALLERS_KYC", "GET /api/v1/customers/{id}", "/kyc-status", "POST /api/v1/risk/loan-eligibility", "realm role `service`"]) {
     assert.ok(note.includes(s), `note names ${s}`);
   }
 });
