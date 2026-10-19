@@ -158,11 +158,10 @@ jobs:
 
       - name: terraform init (no backend) and validate
         env:
-          # The modules this root uses land on terraform-modules main with its
-          # open platform PR #11. Until that merges, validate against that PR's
-          # head commit (pinned, not the moving branch); set back to main (or a
-          # release tag) in the change that merges terraform-modules #11.
-          TF_MODULES_REF: f008be9d9987c42c087142fc565c22c94d293048
+          # The modules this root uses are on terraform-modules main since its
+          # platform PR #11 merged. Another value (a commit or release tag)
+          # replaces ref=main in the module sources for this validation only.
+          TF_MODULES_REF: main
         run: |
           set -euo pipefail
           if [ "$TF_MODULES_REF" != "main" ]; then

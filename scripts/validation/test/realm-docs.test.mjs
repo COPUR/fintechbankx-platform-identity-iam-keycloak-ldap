@@ -101,6 +101,16 @@ test("the remaining manage-members sign-off card stays open and no security-team
   assert.doesNotMatch(text, /signed off by/i);
 });
 
+test("merging with the manage-members residual risk open is recorded as Proposed, not as an acceptance, with the identity-link service as a go-live item", () => {
+  const text = paragraph("Merge with the residual risk open");
+  assert.match(text, /Proposed/);
+  assert.match(text, /not an explicit acceptance of the residual risk/);
+  assert.match(text, /2026-10-08[^.]*stays open/);
+  assert.match(text, /identity-link service[^.]*must replace[^.]*`manage-members`/);
+  assert.match(text, /go-live item/);
+  assert.doesNotMatch(text, /security[- ]team (has )?(signed|approved|accepted)|signed off by/i);
+});
+
 // Counts and lists in REALM_AS_CODE.md follow the client registry
 // (realm/service-clients.json) and the realm import ExternalSecret.
 const registry = JSON.parse(fs.readFileSync(path.join(root, "realm/service-clients.json"), "utf8"));
