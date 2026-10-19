@@ -1,0 +1,10 @@
+aws_region                  = "me-central-1"
+environment                 = "staging"
+vpc_id                      = "vpc-REPLACE"
+private_subnet_ids          = ["subnet-REPLACE-a", "subnet-REPLACE-b", "subnet-REPLACE-c"]
+workload_security_group_ids = ["sg-REPLACE-eks-nodes"]
+aurora_instance_count       = 2
+aurora_max_capacity         = 8
+backup_retention_days       = 14
+deletion_protection         = true
+create_openldap_secrets     = true

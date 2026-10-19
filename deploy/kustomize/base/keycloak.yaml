@@ -1,0 +1,197 @@
+# Keycloak 26.7.5 managed by the Keycloak Operator (k8s.keycloak.org/v2beta1).
+# - 3 instances spread across Availability Zones and nodes; PDB and HPA in
+#   this directory (the CR exposes the scale subresource).
+# - External Aurora PostgreSQL (deploy/terraform), credentials from
+#   ExternalSecret keycloak-db; TLS to the database (rds.force_ssl) with
+#   sslmode=verify-full against the mounted RDS CA bundle.
+# - TLS terminates at the Istio ingress gateway; inside the mesh traffic is
+#   mTLS (STRICT), so Keycloak listens on plain HTTP 8080 and trusts
+#   X-Forwarded-* from the gateway only (NetworkPolicy below + mesh policy).
+# - Health and metrics on the management port 9000 (Keycloak default; the
+#   service contract's 8081 applies to Spring services).
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+spec:
+  instances: 3
+  image: quay.io/keycloak/keycloak:26.7.5
+  # Stock image: let Keycloak run its build step at start-up. Switch to true
+  # once CI publishes an optimized image (kc.sh build) to ECR.
+  startOptimized: false
+
+  db:
+    vendor: postgres
+    host: AURORA_WRITER_ENDPOINT
+    port: 5432
+    database: db_idn_keycloak_ldap_ENVIRONMENT
+    schema: keycloak
+    usernameSecret:
+      name: keycloak-db
+      key: username
+    passwordSecret:
+      name: keycloak-db
+      key: password
+    poolInitialSize: 5
+    poolMinSize: 5
+    poolMaxSize: 30
+
+  http:
+    httpEnabled: true
+    httpPort: 8080
+    serviceName: keycloak
+
+  httpManagement:
+    port: 9000
+
+  hostname:
+    hostname: https://IDENTITY_HOST
+    strict: true
+    # Services reach Keycloak in-cluster (keycloak.identity.svc.cluster.local:8080)
+    # for token and JWKS calls; issuer stays the public hostname.
+    backchannelDynamic: true
+
+  proxy:
+    headers: xforwarded
+
+  features:
+    disabled:
+      - impersonation
+
+  additionalOptions:
+    # verify-full: the Aurora certificate must chain to the Amazon RDS CA and
+    # name the endpoint (sslmode=require would trust any certificate). The
+    # bundle is ConfigMap rds-ca-bundle, published in this namespace by the
+    # mesh repo's trust-manager Bundle and mounted below (podTemplate).
+    # Database settings come only from spec.db and this option. Host and
+    # database in spec.db (identity-environment in the overlays) must be plain
+    # names: a '?' there moves these properties out of the query string. A
+    # db-url set any other way (spec.env, pod template env or args, another
+    # spelling of the option, keycloak.conf) drops them.
+    # scripts/validation/test/keycloak-cr.test.mjs fails on each of these.
+    - name: db-url-properties
+      value: "?sslmode=verify-full&sslrootcert=/etc/fintechbankx/rds-ca/global-bundle.pem"
+    - name: health-enabled
+      value: "true"
+    - name: metrics-enabled
+      value: "true"
+    - name: event-metrics-user-enabled
+      value: "true"
+    - name: log-console-output
+      value: json
+    - name: http-metrics-histograms-enabled
+      value: "true"
+    - name: spi-events-listener--jboss-logging--success-level
+      value: info
+    - name: spi-events-listener--jboss-logging--error-level
+      value: warn
+    # Admin event lines include the changed representation. The observability
+    # alert KeycloakServiceAccountAdminEventOutOfScope (Loki rule
+    # identity-admin-events) needs it to tell a user disable or a credential
+    # change from other user updates. Representations can carry personal data
+    # (username, email, first and last name, user attributes such as
+    # customer_id); they go to the central log sink, so the collector's
+    # privacy processors and the Loki retention and access rules apply to them.
+    - name: spi-events-listener--jboss-logging--include-representation
+      value: "true"
+
+  tracing:
+    enabled: true
+    endpoint: http://otel-collector.observability.svc.cluster.local:4317
+    protocol: grpc
+    serviceName: svc-idn-keycloak-ldap
+    samplerType: parentbased_traceidratio
+    samplerRatio: 0.1
+
+  # Machine admin used only by the realm import Job (client credentials in
+  # the master realm). Rotate it after the first import; no human admin is
+  # bootstrapped from source control.
+  bootstrapAdmin:
+    service:
+      secret: keycloak-bootstrap-admin-client
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1536Mi
+    limits:
+      memory: 2Gi
+
+  scheduling:
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: keycloak
+            app.kubernetes.io/instance: keycloak
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: keycloak
+            app.kubernetes.io/instance: keycloak
+
+  # Operator-managed NetworkPolicy for the Keycloak pods. Additive to the
+  # mesh repository's namespace default-deny and edge rules.
+  networkPolicy:
+    enabled: true
+    http:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: istio-ingress
+        podSelector:
+          matchLabels:
+            istio: ingressgateway
+      # Namespaces of the service clients in realm/service-clients.json (token
+      # endpoint and JWKS); keycloak-cr.test.mjs keeps the two in step.
+      - namespaceSelector:
+          matchExpressions:
+            - key: kubernetes.io/metadata.name
+              operator: In
+              values: [lending, payments, customer, risk, compliance, open-finance, corebanking]
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: keycloak-realm-import
+    management:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: observability
+
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
+  update:
+    strategy: Auto
+
+  unsupported:
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: keycloak
+          sidecar.istio.io/inject: "true"
+          fintechbankx.io/service-id: svc-idn-keycloak-ldap
+          version: "26.7.5"
+        annotations:
+          proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true }'
+      spec:
+        serviceAccountName: keycloak
+        # The operator merges the first container with the Keycloak container.
+        containers:
+          - volumeMounts:
+              - name: database-ca
+                mountPath: /etc/fintechbankx/rds-ca
+                readOnly: true
+        volumes:
+          - name: database-ca
+            configMap:
+              name: rds-ca-bundle
+              items:
+                - key: global-bundle.pem
+                  path: global-bundle.pem

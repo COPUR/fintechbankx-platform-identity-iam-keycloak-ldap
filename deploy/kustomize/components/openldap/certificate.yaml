@@ -1,0 +1,28 @@
+# Server certificate for StartTLS/LDAPS, issued by the platform internal CA
+# (cert-manager ClusterIssuer fintechbankx-internal-ca, owned by the mesh
+# security repository). Rotated by cert-manager; OpenLDAP restarts pick it up.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openldap-tls
+  labels:
+    app.kubernetes.io/name: openldap
+spec:
+  secretName: openldap-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  dnsNames:
+    - openldap.identity.svc.cluster.local
+    - openldap.identity.svc
+    - openldap
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    kind: ClusterIssuer
+    name: fintechbankx-internal-ca

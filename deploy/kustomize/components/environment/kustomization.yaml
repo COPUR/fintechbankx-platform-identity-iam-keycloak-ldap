@@ -1,0 +1,53 @@
+# Propagates identity-environment (set by each overlay) into the resources.
+# Include it LAST in every overlay's components so overlay patches to
+# identity-environment are applied before the values are copied.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# The Secrets Manager path prefix is the environment name
+# (<env>/<service-slug>/...). Every ExternalSecret in this package writes
+# ENVIRONMENT as the first path segment; this replaces it with
+# identity-environment.data.environment from the overlay.
+replacements:
+  - source:
+      kind: ConfigMap
+      name: identity-environment
+      fieldPath: data.environment
+    targets:
+      - select:
+          kind: ExternalSecret
+        fieldPaths:
+          - spec.data.*.remoteRef.key
+        options:
+          delimiter: /
+          index: 0
+  - source:
+      kind: ConfigMap
+      name: identity-environment
+      fieldPath: data.identityUrl
+    targets:
+      - select:
+          kind: Keycloak
+          name: keycloak
+        fieldPaths:
+          - spec.hostname.hostname
+  - source:
+      kind: ConfigMap
+      name: identity-environment
+      fieldPath: data.databaseHost
+    targets:
+      - select:
+          kind: Keycloak
+          name: keycloak
+        fieldPaths:
+          - spec.db.host
+  - source:
+      kind: ConfigMap
+      name: identity-environment
+      fieldPath: data.databaseName
+    targets:
+      - select:
+          kind: Keycloak
+          name: keycloak
+        fieldPaths:
+          - spec.db.database

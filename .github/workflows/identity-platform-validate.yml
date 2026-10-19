@@ -1,0 +1,187 @@
+name: identity-platform-validate
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev, staging]
+
+permissions:
+  contents: read
+
+env:
+  # Pinned with a sha256 per runner architecture in "Install kustomize and kubeconform".
+  KUSTOMIZE_VERSION: v5.4.3
+  KUBECONFORM_VERSION: v0.6.7
+  KEYCLOAK_VERSION: 26.7.5
+
+jobs:
+  realm:
+    name: identity/realm
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Realm JSON parses
+        run: |
+          set -euo pipefail
+          jq empty realm/fintechbankx-realm.json realm/service-clients.json
+
+      - name: Realm JSON is the render of the client registry
+        run: node scripts/realm/render-realm.mjs --check
+
+      - name: Realm contract check (clients, roles, audiences, no secret values)
+        run: node scripts/ci/check-realm.mjs
+
+      - name: Unit tests of the validators
+        run: npm test
+
+  manifests:
+    name: identity/manifests
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install kustomize and kubeconform
+        run: |
+          set -euo pipefail
+          # Runner architecture -> release asset name, with the sha256 of that asset for
+          # KUSTOMIZE_VERSION and KUBECONFORM_VERSION above, from each release's official
+          # checksums file (kustomize checksums.txt, kubeconform CHECKSUMS). A version bump
+          # must update these sums too; a mismatch fails the step.
+          case "$(uname -m)" in
+            x86_64)
+              arch=amd64
+              kustomize_sha256=3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7
+              kubeconform_sha256=95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+              ;;
+            aarch64)
+              arch=arm64
+              kustomize_sha256=1b515578b0af12c15d9856720066ce2fe66756d63785b2cbccaf2885beb2381c
+              kubeconform_sha256=dc82f79bb03c5479b1ae5fd4af221e4b5a3111f62bf01a2795d9c5c20fa96644
+              ;;
+            *)
+              echo "::error::no pinned kustomize/kubeconform build for runner architecture $(uname -m)"
+              exit 1
+              ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/dl"
+          curl -sSfL -o "$RUNNER_TEMP/dl/kustomize.tar.gz" \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_${arch}.tar.gz"
+          echo "${kustomize_sha256}  $RUNNER_TEMP/dl/kustomize.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/dl/kustomize.tar.gz" -C "$RUNNER_TEMP/bin" kustomize
+          curl -sSfL -o "$RUNNER_TEMP/dl/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-${arch}.tar.gz"
+          echo "${kubeconform_sha256}  $RUNNER_TEMP/dl/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/dl/kubeconform.tar.gz" -C "$RUNNER_TEMP/bin" kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Keycloak CRD schemas (pinned operator release)
+        run: |
+          set -euo pipefail
+          crd_dir="$RUNNER_TEMP/crds"
+          mkdir -p "$crd_dir"
+          for f in keycloaks.k8s.keycloak.org-v1.yml keycloakrealmimports.k8s.keycloak.org-v1.yml; do
+            curl -sSfL -o "$crd_dir/$f" "https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/${KEYCLOAK_VERSION}/kubernetes/$f"
+          done
+          node scripts/ci/crd-to-jsonschema.mjs "$RUNNER_TEMP/schemas" "$crd_dir"/*.yml
+
+      - name: kustomize build + kubeconform per overlay
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rendered"
+          for overlay in dev staging prod; do
+            out="$RUNNER_TEMP/rendered/$overlay.yaml"
+            kustomize build "deploy/kustomize/overlays/$overlay" > "$out"
+            if grep -nE 'ENVIRONMENT|IDENTITY_HOST|APP_HOST|GRAFANA_HOST|AURORA_WRITER_ENDPOINT' "$out"; then
+              echo "::error::unresolved placeholder in overlay $overlay"
+              exit 1
+            fi
+            kubeconform -strict -summary \
+              -schema-location default \
+              -schema-location "$RUNNER_TEMP/schemas/{{.ResourceKind}}-{{.Group}}-{{.ResourceAPIVersion}}.json" \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+              "$out"
+          done
+
+      - name: Operator package builds
+        run: kustomize build deploy/kustomize/operator > /dev/null
+
+      - name: Keycloak CR checks on rendered overlays (database TLS verify-full)
+        env:
+          FBX_REQUIRE_KUSTOMIZE: '1'
+        run: node --test scripts/validation/test/keycloak-cr.test.mjs
+
+      - name: Mesh guardrails on rendered manifests
+        run: |
+          set -euo pipefail
+          node scripts/validation/validate-strict-mtls.mjs --path "$RUNNER_TEMP/rendered"
+          if grep -n 'excludeInboundPorts' "$RUNNER_TEMP"/rendered/*.yaml; then
+            echo "::error::traffic.sidecar.istio.io/excludeInboundPorts is not allowed (platform contract addendum)"
+            exit 1
+          fi
+
+  terraform:
+    name: identity/terraform
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.9.8
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: terraform init (no backend) and validate
+        env:
+          # The modules this root uses land on terraform-modules main with its
+          # open platform PR #11. Until that merges, validate against that PR's
+          # head commit (pinned, not the moving branch); set back to main (or a
+          # release tag) in the change that merges terraform-modules #11.
+          TF_MODULES_REF: f008be9d9987c42c087142fc565c22c94d293048
+        run: |
+          set -euo pipefail
+          if [ "$TF_MODULES_REF" != "main" ]; then
+            sed -i "s#fintechbankx-platform-delivery-iac-terraform-modules.git//\(modules/[a-z0-9-]*\)?ref=main#fintechbankx-platform-delivery-iac-terraform-modules.git//\1?ref=${TF_MODULES_REF}#" ./*.tf
+          fi
+          terraform init -backend=false -input=false
+          terraform validate
+
+  scripts:
+    name: identity/scripts
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Shell syntax and shellcheck
+        run: |
+          set -euo pipefail
+          for f in scripts/identity/*.sh; do
+            bash -n "$f"
+          done
+          shellcheck -S warning scripts/identity/*.sh

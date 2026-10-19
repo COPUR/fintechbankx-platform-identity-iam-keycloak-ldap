@@ -1,0 +1,330 @@
+{
+  "description": "Clients of realm fintechbankx and the audiences each may request. Source: platform contract (identity section and addendum 2026-10-08), repository bootstrap manifest, and call edges read from the service repos (mirrored in the mesh contract). ssoClients are confidential browser clients for staff tools (authorization code + PKCE). One confidential client-credentials client per service (client id = service id); its credential lives in Secrets Manager <env>/<serviceSlug>/oidc-client and reaches the realm import job as env FBX_OIDC_SECRET_<CLIENT_ID upper-cased, - to _>. audiences = service ids the client may call; each becomes an oidc-audience-mapper so tokens carry aud=<callee service id>. A callee with audienceByScope: true is reached only through the optional client scope aud-<callee service id>: its callers still list it in audiences, but the render gives them that optional scope instead of a mapper, so aud carries the callee only when the caller requests the scope (scope=aud-<callee service id> on the client-credentials grant, or in the authorization request of a channel client).",
+  "clients": [
+    {
+      "clientId": "svc-ln-loan-lifecycle",
+      "serviceSlug": "loan-lifecycle-service",
+      "namespace": "lending",
+      "serviceAccount": "loan-lifecycle-service",
+      "displayName": "Loan Lifecycle Service",
+      "source": "contract",
+      "audiences": [
+        "svc-cus-profile-kyc",
+        "svc-acc-accounts-ledger",
+        "svc-rsk-decisioning"
+      ],
+      "audienceProvenance": {
+        "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08 (CustomerProfileHttpAdapter)",
+        "svc-acc-accounts-ledger": "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)",
+        "svc-rsk-decisioning": "confirmed by CRC screening-facts plan 2026-10-18 (owner's answer \"Risk decides\": loan enforces risk's POST /api/v1/risk/loan-eligibility; risk SERVICE_CALLERS_ELIGIBILITY)"
+      }
+    },
+    {
+      "clientId": "svc-pay-initiation-settlement",
+      "serviceSlug": "payment-initiation-settlement-service",
+      "namespace": "payments",
+      "serviceAccount": "payment-initiation-settlement-service",
+      "displayName": "Payment Initiation and Settlement Service",
+      "source": "contract",
+      "audiences": [
+        "svc-rsk-decisioning",
+        "svc-cmp-evidence",
+        "svc-of-payee-verification",
+        "svc-cus-profile-kyc",
+        "svc-acc-accounts-ledger"
+      ],
+      "audienceProvenance": {
+        "svc-rsk-decisioning": "confirmed by service thread 2026-10-08 (RiskDecisioningHttpAdapter POST /api/v1/risk/assess; v2 per CRC screening-facts plan 2026-10-18)",
+        "svc-cmp-evidence": "confirmed by service thread 2026-10-08 (ComplianceEvidenceHttpAdapter POST /api/v1/compliance/screen; v2 per CRC screening-facts plan 2026-10-18)",
+        "svc-of-payee-verification": "confirmed by service thread 2026-10-08",
+        "svc-cus-profile-kyc": "confirmed by customer thread 2026-10-08: GET /api/v1/customers/{id}/kyc-status (SERVICE_CALLERS_KYC)",
+        "svc-acc-accounts-ledger": "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)"
+      }
+    },
+    {
+      "clientId": "svc-pay-recurring-mandates",
+      "serviceSlug": "payment-recurring-mandates-service",
+      "namespace": "payments",
+      "serviceAccount": "payment-recurring-mandates-service",
+      "displayName": "Recurring Mandates Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [
+        "svc-of-consent-authorization",
+        "svc-acc-accounts-ledger"
+      ],
+      "audienceProvenance": {
+        "svc-of-consent-authorization": "confirmed by the open finance thread 2026-10-08 (consent GET /api/v1/consents/{id} azp allow-list)",
+        "svc-acc-accounts-ledger": "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)"
+      }
+    },
+    {
+      "clientId": "svc-pay-bulk-orchestration",
+      "serviceSlug": "payment-bulk-orchestration-service",
+      "namespace": "payments",
+      "serviceAccount": "payment-bulk-orchestration-service",
+      "displayName": "Bulk Payment Orchestration Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [
+        "svc-of-consent-authorization",
+        "svc-acc-accounts-ledger"
+      ],
+      "audienceProvenance": {
+        "svc-of-consent-authorization": "confirmed by service thread 2026-10-08 (bulk orchestration PR #13, client-credentials call to consent-auth)",
+        "svc-acc-accounts-ledger": "confirmed by accounts ledger thread 2026-10-17 (docs/CONSUMER_CONTRACT.md, SERVICE_CALLERS)"
+      }
+    },
+    {
+      "clientId": "svc-pay-request-to-pay",
+      "serviceSlug": "payment-request-to-pay-service",
+      "namespace": "payments",
+      "serviceAccount": "payment-request-to-pay-service",
+      "displayName": "Request to Pay Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-cus-profile-kyc",
+      "serviceSlug": "customer-profile-kyc-service",
+      "namespace": "customer",
+      "serviceAccount": "customer-profile-kyc-service",
+      "displayName": "Customer Profile and KYC Service",
+      "source": "contract",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-rsk-decisioning",
+      "serviceSlug": "risk-decisioning-service",
+      "namespace": "risk",
+      "serviceAccount": "risk-decisioning-service",
+      "displayName": "Risk Decisioning Service",
+      "source": "contract",
+      "audiences": [
+        "svc-cus-profile-kyc"
+      ],
+      "audienceProvenance": {
+        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (risk reads GET /api/v1/customers/{id}/credit-standing for loan eligibility; customer SERVICE_CALLERS_CREDIT_STANDING)"
+      }
+    },
+    {
+      "clientId": "svc-cmp-evidence",
+      "serviceSlug": "compliance-evidence-service",
+      "namespace": "compliance",
+      "serviceAccount": "compliance-evidence-service",
+      "displayName": "Compliance Evidence Service",
+      "source": "contract",
+      "audiences": [
+        "svc-cus-profile-kyc"
+      ],
+      "audienceProvenance": {
+        "svc-cus-profile-kyc": "confirmed by CRC screening-facts plan 2026-10-18 (compliance reads GET /api/v1/customers/{id}/screening-profile, name and KYC status, for sanctions and PEP screening; customer SERVICE_CALLERS_SCREENING)"
+      }
+    },
+    {
+      "clientId": "svc-of-consent-authorization",
+      "serviceSlug": "consent-authorization-service",
+      "namespace": "open-finance",
+      "serviceAccount": "consent-authorization-service",
+      "displayName": "Open Finance Consent and Authorization Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-of-personal-financial-data",
+      "serviceSlug": "personal-financial-data-service",
+      "namespace": "open-finance",
+      "serviceAccount": "personal-financial-data-service",
+      "displayName": "Open Finance Personal Financial Data Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-of-business-financial-data",
+      "serviceSlug": "business-financial-data-service",
+      "namespace": "open-finance",
+      "serviceAccount": "business-financial-data-service",
+      "displayName": "Open Finance Business Financial Data Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-of-payee-verification",
+      "serviceSlug": "payee-verification-service",
+      "namespace": "open-finance",
+      "serviceAccount": "payee-verification-service",
+      "displayName": "Open Finance Payee Verification Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-of-banking-metadata",
+      "serviceSlug": "banking-metadata-service",
+      "namespace": "open-finance",
+      "serviceAccount": "banking-metadata-service",
+      "displayName": "Open Finance Banking Metadata Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-of-open-products-catalog",
+      "serviceSlug": "open-products-catalog-service",
+      "namespace": "open-finance",
+      "serviceAccount": "open-products-catalog-service",
+      "displayName": "Open Finance Products Catalog Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-of-atm-directory",
+      "serviceSlug": "atm-directory-service",
+      "namespace": "open-finance",
+      "serviceAccount": "atm-directory-service",
+      "displayName": "Open Finance ATM Directory Service",
+      "source": "bootstrap-manifest; client id and service slug confirmed by service thread 2026-10-08",
+      "audiences": [],
+      "audienceProvenance": {}
+    },
+    {
+      "clientId": "svc-acc-accounts-ledger",
+      "serviceSlug": "accounts-ledger-service",
+      "namespace": "corebanking",
+      "serviceAccount": "accounts-ledger-service",
+      "displayName": "Accounts Ledger Service",
+      "source": "accounts ledger thread 2026-10-17 (service repository neo-fintechbankx-corebanking-accounts-ledger-service PR #1: service id, chart service account and slug accounts-ledger-service)",
+      "audiences": [],
+      "audienceProvenance": {},
+      "audienceByScope": true
+    }
+  ],
+  "channelClients": [
+    {
+      "clientId": "fintechbankx-web",
+      "type": "first-party-public",
+      "userType": "customer",
+      "offlineAccess": false,
+      "displayName": "FinTechBankX web portal (customers)",
+      "audiences": [
+        "svc-ln-loan-lifecycle",
+        "svc-pay-initiation-settlement",
+        "svc-pay-recurring-mandates",
+        "svc-pay-bulk-orchestration",
+        "svc-pay-request-to-pay",
+        "svc-cus-profile-kyc"
+      ],
+      "audienceProvenance": {
+        "svc-ln-loan-lifecycle": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-initiation-settlement": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-recurring-mandates": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-bulk-orchestration": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-request-to-pay": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08"
+      }
+    },
+    {
+      "clientId": "fintechbankx-staff-web",
+      "type": "first-party-public",
+      "userType": "staff",
+      "offlineAccess": false,
+      "displayName": "FinTechBankX staff web portal (bankers, loan officers, admins, auditors, compliance)",
+      "audiences": [
+        "svc-ln-loan-lifecycle",
+        "svc-pay-initiation-settlement",
+        "svc-pay-recurring-mandates",
+        "svc-pay-bulk-orchestration",
+        "svc-pay-request-to-pay",
+        "svc-cus-profile-kyc",
+        "svc-rsk-decisioning",
+        "svc-cmp-evidence",
+        "svc-acc-accounts-ledger"
+      ],
+      "audienceProvenance": {
+        "svc-ln-loan-lifecycle": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-initiation-settlement": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-recurring-mandates": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-bulk-orchestration": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-request-to-pay": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08",
+        "svc-rsk-decisioning": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread; moved from fintechbankx-web (security review 2026-10-08: staff roles only on the staff client)",
+        "svc-cmp-evidence": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread; moved from fintechbankx-web (security review 2026-10-08: staff roles only on the staff client)",
+        "svc-acc-accounts-ledger": "derived (platform pillar, staff-only decision 2026-10-17): staff endpoints of the accounts ledger (GET /api/v1/accounts/{accountId}, account open, freeze, unfreeze and close for banker and admin; GET /api/v1/journal-entries/{journalEntryId} for banker and admin; POST /api/v1/journal-entries for admin), not yet confirmed by the accounts ledger thread"
+      }
+    },
+    {
+      "clientId": "fintechbankx-mobile",
+      "type": "first-party-public",
+      "userType": "customer",
+      "offlineAccess": true,
+      "displayName": "FinTechBankX mobile app (customers)",
+      "audiences": [
+        "svc-ln-loan-lifecycle",
+        "svc-pay-initiation-settlement",
+        "svc-pay-recurring-mandates",
+        "svc-pay-bulk-orchestration",
+        "svc-pay-request-to-pay",
+        "svc-cus-profile-kyc"
+      ],
+      "audienceProvenance": {
+        "svc-ln-loan-lifecycle": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-initiation-settlement": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-recurring-mandates": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-bulk-orchestration": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-pay-request-to-pay": "derived (platform pillar): user-facing API, not yet confirmed by the owning service thread",
+        "svc-cus-profile-kyc": "confirmed by service thread 2026-10-08"
+      }
+    },
+    {
+      "clientId": "of-tpp-conformance-template",
+      "type": "open-finance-tpp",
+      "displayName": "Open Finance TPP conformance template (disabled reference)",
+      "audiences": [
+        "svc-of-consent-authorization",
+        "svc-of-personal-financial-data",
+        "svc-of-business-financial-data",
+        "svc-of-payee-verification",
+        "svc-of-banking-metadata",
+        "svc-of-open-products-catalog",
+        "svc-of-atm-directory",
+        "svc-pay-recurring-mandates",
+        "svc-pay-bulk-orchestration",
+        "svc-pay-request-to-pay"
+      ],
+      "audienceProvenance": {
+        "svc-of-consent-authorization": "derived (platform pillar): TPPs call the consent API with their access token",
+        "svc-of-personal-financial-data": "confirmed by service thread 2026-10-08 (open-finance resource service)",
+        "svc-of-business-financial-data": "confirmed by service thread 2026-10-08 (open-finance resource service)",
+        "svc-of-payee-verification": "confirmed by service thread 2026-10-08 (open-finance resource service)",
+        "svc-of-banking-metadata": "confirmed by service thread 2026-10-08 (open-finance resource service)",
+        "svc-of-open-products-catalog": "confirmed by service thread 2026-10-08 (open-finance resource service)",
+        "svc-of-atm-directory": "confirmed by service thread 2026-10-08 (open-finance resource service)",
+        "svc-pay-recurring-mandates": "confirmed by the lending and payments thread 2026-10-08 (mandates PR #13, /open-finance/v1/vrp, DPoP)",
+        "svc-pay-bulk-orchestration": "confirmed by the lending and payments thread 2026-10-08 (bulk PR #13, /open-finance/v1/file-payments, DPoP)",
+        "svc-pay-request-to-pay": "confirmed by the lending and payments thread 2026-10-08 (request-to-pay PR #14, /open-finance/v1/par and /payment-consents, DPoP)"
+      }
+    }
+  ],
+  "ssoClients": [
+    {
+      "clientId": "svc-obs-grafana",
+      "serviceSlug": "observability-grafana",
+      "namespace": "observability",
+      "displayName": "Grafana (staff SSO)",
+      "redirectPathEnv": "FBX_GRAFANA_ROOT_URL",
+      "roles": [
+        "admin",
+        "auditor"
+      ],
+      "roleMapping": {
+        "admin": "Grafana Admin",
+        "auditor": "Grafana Viewer"
+      },
+      "source": "coordinator 2026-10-08 (observability pillar)"
+    }
+  ]
+}

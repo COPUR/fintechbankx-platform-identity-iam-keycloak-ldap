@@ -1,0 +1,105 @@
+# prod: Keycloak federated to the corporate directory (AWS Managed Microsoft
+# AD over LDAPS). No in-cluster OpenLDAP. Same realm file, same mappers; only
+# the LDAP_* connection values differ (docs/identity/DIRECTORY_FEDERATION.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - identity-environment.yaml
+
+components:
+  - ../../components/environment
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: keycloak-realm-import-env
+    patch: |-
+      - op: replace
+        path: /data/FBX_GRAFANA_ROOT_URL
+        value: https://grafana.fintechbankx.example
+      - op: replace
+        path: /data/LDAP_VENDOR
+        value: ad
+      - op: replace
+        path: /data/LDAP_CONNECTION_URL
+        value: ldaps://corp.fintechbankx.example:636
+      - op: replace
+        path: /data/LDAP_START_TLS
+        value: "false"
+      - op: replace
+        path: /data/LDAP_BIND_DN
+        value: CN=svc-keycloak-ldap-read,OU=Service Accounts,OU=FinTechBankX,DC=corp,DC=fintechbankx,DC=example
+      - op: replace
+        path: /data/LDAP_USERS_DN
+        value: OU=Users,OU=FinTechBankX,DC=corp,DC=fintechbankx,DC=example
+      - op: replace
+        path: /data/LDAP_GROUPS_DN
+        value: OU=Keycloak Roles,OU=Groups,OU=FinTechBankX,DC=corp,DC=fintechbankx,DC=example
+      - op: replace
+        path: /data/LDAP_USERNAME_ATTRIBUTE
+        value: sAMAccountName
+      - op: replace
+        path: /data/LDAP_RDN_ATTRIBUTE
+        value: cn
+      - op: replace
+        path: /data/LDAP_UUID_ATTRIBUTE
+        value: objectGUID
+      - op: replace
+        path: /data/LDAP_USER_OBJECT_CLASSES
+        value: person, organizationalPerson, user
+      - op: replace
+        path: /data/LDAP_GROUP_OBJECT_CLASSES
+        value: group
+      - op: replace
+        path: /data/LDAP_USER_SEARCH_FILTER
+        value: (&(objectCategory=person)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))
+      - op: replace
+        path: /data/FBX_WEB_REDIRECT_URI
+        value: https://app.fintechbankx.example/auth/callback
+      - op: replace
+        path: /data/FBX_WEB_ORIGIN
+        value: https://app.fintechbankx.example
+      - op: replace
+        path: /data/FBX_WEB_POST_LOGOUT_REDIRECT_URI
+        value: https://app.fintechbankx.example/
+      - op: replace
+        path: /data/FBX_STAFF_WEB_REDIRECT_URI
+        value: https://staff.fintechbankx.example/auth/callback
+      - op: replace
+        path: /data/FBX_STAFF_WEB_ORIGIN
+        value: https://staff.fintechbankx.example
+      - op: replace
+        path: /data/FBX_STAFF_WEB_POST_LOGOUT_REDIRECT_URI
+        value: https://staff.fintechbankx.example/
+  # LDAPS to AWS Managed Microsoft AD: trust the directory's CA (published
+  # by the platform as ConfigMap corporate-directory-ca via trust-manager).
+  - target:
+      kind: Keycloak
+      name: keycloak
+    patch: |-
+      - op: add
+        path: /spec/truststores
+        value:
+          corporate-directory-ca:
+            configMap:
+              name: corporate-directory-ca
+      - op: replace
+        path: /spec/resources
+        value:
+          requests:
+            cpu: "2"
+            memory: 2Gi
+          limits:
+            memory: 3Gi
+      - op: replace
+        path: /spec/db/poolMaxSize
+        value: 40
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: keycloak
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 12

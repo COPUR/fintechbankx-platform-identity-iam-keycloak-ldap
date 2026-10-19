@@ -1,0 +1,12 @@
+aws_region                  = "me-central-1"
+environment                 = "prod"
+vpc_id                      = "vpc-REPLACE"
+private_subnet_ids          = ["subnet-REPLACE-a", "subnet-REPLACE-b", "subnet-REPLACE-c"]
+workload_security_group_ids = ["sg-REPLACE-eks-nodes"]
+aurora_instance_count       = 3
+aurora_min_capacity         = 2
+aurora_max_capacity         = 32
+backup_retention_days       = 35
+deletion_protection         = true
+alarm_topic_arn             = "arn:aws:sns:me-central-1:000000000000:fintechbankx-prod-identity-alarms"
+create_openldap_secrets     = false

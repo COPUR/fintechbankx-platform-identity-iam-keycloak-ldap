@@ -1,0 +1,4 @@
+# Exemptions for the publication guardrails secret scan. One line per exemption:
+# file<TAB>exact line text<TAB>reason. A hit is dropped only when its file and whole line are listed.
+scripts/validation/test/apply-admin-permissions.test.mjs	  await fetchAdminToken({ fetch: spy, env: { KEYCLOAK_URL: BASE, KEYCLOAK_LOGINREALM: "other", KEYCLOAK_GRANTTYPE: "password", KEYCLOAK_USER: "u", KEYCLOAK_PASSWORD: "<admin-password>" } });	test environment with a placeholder value
+scripts/realm/tpp-token-drill.mjs	  res = await follow(await post(formAction(html), { username: env.DRILL_PSU_USERNAME, password: env.DRILL_PSU_PASSWORD, credentialId: "" }));	drill reads the PSU password from the environment; no literal value

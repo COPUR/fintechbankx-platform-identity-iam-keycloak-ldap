@@ -1,0 +1,29 @@
+# Keycloak Operator 26.7.5 (upstream manifests, pinned by release tag).
+# CRDs are cluster-scoped; the operator Deployment watches only the namespace
+# it runs in, so it is installed into `identity` next to the Keycloak CR.
+# Apply this once per cluster before the overlays (platform team, not CI).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: identity
+
+resources:
+  - https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.7.5/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+  - https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.7.5/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+  - https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.7.5/kubernetes/kubernetes.yml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: fintechbankx-identity
+    includeSelectors: false
+
+patches:
+  # Upstream pulls with Always; the tag is immutable in our mirror, and
+  # IfNotPresent avoids a registry dependency on every restart.
+  - target:
+      kind: Deployment
+      name: keycloak-operator
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent

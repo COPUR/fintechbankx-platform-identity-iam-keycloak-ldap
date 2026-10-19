@@ -1,0 +1,28 @@
+{
+  "_comment": "Fine-grained admin permissions (Keycloak 26 FGAP v2) applied by scripts/realm/apply-admin-permissions.mjs, the second step of the realm import Job (keycloak-config-cli 6.5.1 cannot import them). Checked by scripts/ci/check-realm.mjs: Groups resource type only, non-staff groups only, scopes view-members and manage-members only, client policy on a registered service client only.",
+  "realm": "fintechbankx",
+  "permissions": [
+    {
+      "name": "fbx-customers-customer-service",
+      "description": "Customer service: view and update members of /customers only (identity link sets customer_id). Not staff users, no role or group changes.",
+      "resourceType": "Groups",
+      "groupPaths": [
+        "/customers"
+      ],
+      "scopes": [
+        "view-members",
+        "manage-members"
+      ],
+      "decisionStrategy": "UNANIMOUS",
+      "policy": {
+        "name": "fbx-customer-service-client",
+        "type": "client",
+        "logic": "POSITIVE",
+        "clients": [
+          "svc-cus-profile-kyc"
+        ]
+      },
+      "reason": "PUT /api/v1/customers/{id}/identity-link (staff step) reads the user and sets the attribute customer_id through the Keycloak admin API (GET and PUT /admin/realms/fintechbankx/users/{id}); confirmed by the customer thread 2026-10-08 (customer PR #13). Replaces realm-management manage-users (security review 2026-10-08, option A)."
+    }
+  ]
+}

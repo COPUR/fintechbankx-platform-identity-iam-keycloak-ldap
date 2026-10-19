@@ -1,0 +1,205 @@
+# Applies realm/fintechbankx-realm.json to the running Keycloak with
+# keycloak-config-cli (idempotent; tracks what it created in remote state, so
+# removals in Git are applied too). Chosen over KeycloakRealmImport, which
+# only creates a realm that does not exist yet and never updates it.
+#
+# Three steps, in order: initContainer keycloak-config-cli imports the realm,
+# then initContainer admin-permissions (Node, scripts/realm/apply-admin-permissions.mjs)
+# removes realm roles from client scope mappings the realm file no longer
+# lists (config-cli never removes them safely) and creates or updates the
+# fine-grained admin permissions of
+# realm/admin-permissions.json, which keycloak-config-cli 6.5.1 cannot import
+# (it skips the system-managed admin-permissions client), then container
+# tpp-onboarding (scripts/realm/onboard-tpp.mjs) creates or repairs the TPP
+# clients of realm/tpp-clients.json (enabled flag from each spec's status:
+# suspended disables, an operator-disabled active client stays disabled) and
+# fails the Job when any client of the running realm tagged
+# fbx.client-type=open-finance-tpp lacks the default client-type scope, is
+# enabled but not listed, or is enabled but listed suspended, or when the
+# running realm breaks the service-client rules of
+# scripts/realm/service-client-rules.mjs with the registry
+# realm/service-clients.json (--verify-live --registry; the same check as
+# check-realm.mjs --live: audience mappers and aud- scopes, the routes to the
+# ledger audience, fullScopeAllowed, stock protocol mappers only, no standard
+# token exchange). All use the same bootstrap admin client;
+# the Node steps receive only that credential.
+#
+# Re-run on every change: Argo CD runs it as a PostSync hook; with plain
+# kubectl delete the old Job first. Image pinned by digest (6.5.1 built for
+# Keycloak 26.5.5; verified locally against Keycloak 26.7.5, see
+# docs/identity/REALM_AS_CODE.md).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-realm-import
+  labels:
+    app.kubernetes.io/name: keycloak-realm-import
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-realm-import
+        sidecar.istio.io/inject: "true"
+      annotations:
+        # Let the Job complete inside the mesh: the sidecar exits with the app.
+        proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true }'
+        sidecar.istio.io/nativeSidecar: "true"
+    spec:
+      serviceAccountName: keycloak-realm-import
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: keycloak-config-cli
+          image: docker.io/adorsys/keycloak-config-cli:6.5.1-26.5.5@sha256:0955d98c8a341898b7aa177477edf8a1e90569ae50bbe7598141c1270b773274
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: keycloak-realm-import-env
+            - secretRef:
+                name: keycloak-realm-import
+          env:
+            - name: JAVA_OPTS
+              value: -XX:MaxRAMPercentage=75 -Djava.io.tmpdir=/tmp
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: realm
+              mountPath: /config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+        - name: admin-permissions
+          image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
+          imagePullPolicy: IfNotPresent
+          command: ["node", "/opt/fbx/script/apply-admin-permissions.mjs", "--spec", "/opt/fbx/spec/admin-permissions.json", "--realm", "/config/fintechbankx-realm.json"]
+          env:
+            - name: KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: keycloak-realm-import-env
+                  key: KEYCLOAK_URL
+            - name: KEYCLOAK_GRANTTYPE
+              valueFrom:
+                configMapKeyRef:
+                  name: keycloak-realm-import-env
+                  key: KEYCLOAK_GRANTTYPE
+            - name: KEYCLOAK_CLIENTID
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-realm-import
+                  key: KEYCLOAK_CLIENTID
+            - name: KEYCLOAK_CLIENTSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-realm-import
+                  key: KEYCLOAK_CLIENTSECRET
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: admin-permissions-script
+              mountPath: /opt/fbx/script
+              readOnly: true
+            - name: admin-permissions-spec
+              mountPath: /opt/fbx/spec
+              readOnly: true
+            - name: realm
+              mountPath: /config
+              readOnly: true
+      containers:
+        - name: tpp-onboarding
+          image: docker.io/library/node:22.22.0-alpine3.22@sha256:7aa86fa052f6e4b101557ccb56717cb4311be1334381f526fe013418fe157384
+          imagePullPolicy: IfNotPresent
+          command: ["node", "/opt/fbx/script/onboard-tpp.mjs", "--tpps", "/opt/fbx/tpps/tpp-clients.json", "--realm", "/config/fintechbankx-realm.json", "--verify-live", "--registry", "/opt/fbx/registry/service-clients.json"]
+          env:
+            - name: KEYCLOAK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: keycloak-realm-import-env
+                  key: KEYCLOAK_URL
+            - name: KEYCLOAK_GRANTTYPE
+              valueFrom:
+                configMapKeyRef:
+                  name: keycloak-realm-import-env
+                  key: KEYCLOAK_GRANTTYPE
+            - name: KEYCLOAK_CLIENTID
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-realm-import
+                  key: KEYCLOAK_CLIENTID
+            - name: KEYCLOAK_CLIENTSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-realm-import
+                  key: KEYCLOAK_CLIENTSECRET
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: admin-permissions-script
+              mountPath: /opt/fbx/script
+              readOnly: true
+            - name: tpp-clients
+              mountPath: /opt/fbx/tpps
+              readOnly: true
+            - name: service-clients
+              mountPath: /opt/fbx/registry
+              readOnly: true
+            - name: realm
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: admin-permissions-script
+          configMap:
+            name: fintechbankx-realm-admin-permissions-script
+        - name: admin-permissions-spec
+          configMap:
+            name: fintechbankx-realm-admin-permissions
+        - name: tpp-clients
+          configMap:
+            name: fintechbankx-realm-tpp-clients
+        - name: service-clients
+          configMap:
+            name: fintechbankx-realm-service-clients
+        - name: realm
+          configMap:
+            name: fintechbankx-realm
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

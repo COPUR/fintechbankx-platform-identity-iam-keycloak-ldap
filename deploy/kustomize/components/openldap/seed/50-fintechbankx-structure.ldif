@@ -1,0 +1,60 @@
+# FinTechBankX directory skeleton for dev/staging OpenLDAP (Proposed).
+# Base DN dc=fintechbankx,dc=internal. Structure only: no people, no
+# credentials. Staff test identities are created per environment by the
+# identity squad through the runbook in docs/identity/DIRECTORY_FEDERATION.md.
+#
+# The five fbx-* groups map 1:1 to Keycloak groups under /staff, which carry
+# the realm roles banker, loan_officer, admin, auditor, compliance_officer.
+# groupOfNames requires at least one member, so every group lists the
+# non-person entry cn=membership-placeholder,ou=system (Keycloak ignores it:
+# it does not match the inetOrgPerson user filter).
+
+dn: ou=people,dc=fintechbankx,dc=internal
+objectClass: organizationalUnit
+ou: people
+description: Staff accounts (dev/staging synthetic identities only)
+
+dn: ou=groups,dc=fintechbankx,dc=internal
+objectClass: organizationalUnit
+ou: groups
+description: Role groups federated into Keycloak realm fintechbankx
+
+dn: ou=system,dc=fintechbankx,dc=internal
+objectClass: organizationalUnit
+ou: system
+description: Non-person entries
+
+dn: cn=membership-placeholder,ou=system,dc=fintechbankx,dc=internal
+objectClass: organizationalRole
+cn: membership-placeholder
+description: Keeps groupOfNames valid while a group has no members
+
+dn: cn=fbx-banker,ou=groups,dc=fintechbankx,dc=internal
+objectClass: groupOfNames
+cn: fbx-banker
+description: Realm role banker
+member: cn=membership-placeholder,ou=system,dc=fintechbankx,dc=internal
+
+dn: cn=fbx-loan-officer,ou=groups,dc=fintechbankx,dc=internal
+objectClass: groupOfNames
+cn: fbx-loan-officer
+description: Realm role loan_officer
+member: cn=membership-placeholder,ou=system,dc=fintechbankx,dc=internal
+
+dn: cn=fbx-admin,ou=groups,dc=fintechbankx,dc=internal
+objectClass: groupOfNames
+cn: fbx-admin
+description: Realm role admin
+member: cn=membership-placeholder,ou=system,dc=fintechbankx,dc=internal
+
+dn: cn=fbx-auditor,ou=groups,dc=fintechbankx,dc=internal
+objectClass: groupOfNames
+cn: fbx-auditor
+description: Realm role auditor
+member: cn=membership-placeholder,ou=system,dc=fintechbankx,dc=internal
+
+dn: cn=fbx-compliance-officer,ou=groups,dc=fintechbankx,dc=internal
+objectClass: groupOfNames
+cn: fbx-compliance-officer
+description: Realm role compliance_officer
+member: cn=membership-placeholder,ou=system,dc=fintechbankx,dc=internal

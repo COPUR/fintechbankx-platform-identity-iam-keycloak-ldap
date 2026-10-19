@@ -1,0 +1,22 @@
+# OpenLDAP accepts connections from Keycloak pods only, on 389 (StartTLS
+# enforced by slapd; LDAPS 636 is not exposed, matching the mesh contract).
+# Additive to the mesh repository's identity namespace policies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openldap-from-keycloak
+  labels:
+    app.kubernetes.io/name: openldap
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openldap
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: keycloak
+      ports:
+        - protocol: TCP
+          port: 389

@@ -1,0 +1,22 @@
+# Declares the JGroups failure-detection port so Istio (REGISTRY_ONLY outbound)
+# knows the pod-to-pod cluster traffic. The data port 7800 is already declared
+# by the operator's headless Service keycloak-discovery (port name "tcp",
+# operator 26.7.5 KeycloakDiscoveryServiceDependentResource), so it is not
+# repeated here; this Service only adds 57800 (Constants.KEYCLOAK_JGROUPS_FD_PORT).
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-jgroups-fd
+  labels:
+    app.kubernetes.io/name: keycloak
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: keycloak
+    app.kubernetes.io/instance: keycloak
+  ports:
+    - name: tcp-jgroups-fd
+      protocol: TCP
+      port: 57800
+      targetPort: 57800

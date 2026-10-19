@@ -1,0 +1,36 @@
+# OpenLDAP for dev and staging only (Proposed). Production federates to the
+# corporate directory instead (docs/identity/DIRECTORY_FEDERATION.md).
+# Single replica: the directory holds synthetic test identities only and is
+# rebuilt from the seed; Keycloak keeps working on cached users if it is down.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - serviceaccount.yaml
+  - certificate.yaml
+  - externalsecret.yaml
+  - service.yaml
+  - statefulset.yaml
+  - networkpolicy.yaml
+
+configMapGenerator:
+  - name: openldap-seed
+    files:
+      - seed/50-fintechbankx-structure.ldif
+    options:
+      labels:
+        app.kubernetes.io/name: openldap
+
+patches:
+  # Keycloak must trust the internal CA that signs the OpenLDAP certificate
+  # (StartTLS). trust-manager publishes the CA bundle as a ConfigMap.
+  - target:
+      kind: Keycloak
+      name: keycloak
+    patch: |-
+      - op: add
+        path: /spec/truststores
+        value:
+          internal-ca:
+            configMap:
+              name: fintechbankx-internal-ca
