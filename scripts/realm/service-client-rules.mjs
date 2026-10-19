@@ -338,7 +338,15 @@ export const SOD_RULES = [
     checker: { role: "sod_cmp_checker", groups: /^fbx-cmp-([a-z0-9]+(-[a-z0-9]+)*-mlro|tr-compliance-officer|review-l2)$/ } },
   { id: "pay", what: "payment operations and supervisor queues", prefix: "fbx-pay-",
     maker: { role: "sod_pay_maker", groups: /^fbx-pay-(tr-fast-ops|ops-l1)$/ },
-    checker: { role: "sod_pay_checker", groups: /^fbx-pay-(tr-fast-supervisor|ops-l2)$/ } }
+    checker: { role: "sod_pay_checker", groups: /^fbx-pay-(tr-fast-supervisor|ops-l2)$/ } },
+  // TR FAST SİPER fraud queues requested by bpo (analyst L1 maker, senior L2
+  // checker). This rule only keeps one person out of both queues; a decision
+  // the bpo process lets the senior take without a maker task (reported as
+  // FRAUD_SENIOR_BLOCK_DECISION, not verified from identity) is not a
+  // maker/checker pair at sign-in.
+  { id: "fraud", what: "fraud analyst and senior queues", prefix: "fbx-cmp-",
+    maker: { role: "sod_fraud_maker", groups: /^fbx-cmp-[a-z0-9]+(-[a-z0-9]+)*-fraud-l1$/ },
+    checker: { role: "sod_fraud_checker", groups: /^fbx-cmp-[a-z0-9]+(-[a-z0-9]+)*-fraud-l2$/ } }
 ];
 export const SOD_ROLES = SOD_RULES.flatMap((r) => [r.maker.role, r.checker.role]);
 export const STAFF_BROWSER_FLOW = "fbx-staff-browser";
@@ -508,8 +516,13 @@ export function staffSignInErrors(realm, registry) {
         if (p === `/staff/${name}` && side.groups.test(name) && !own.has(side.role)) errs.add(`group ${p} is one of the ${rule.what} and must grant realm role ${side.role}; without it the separation check does not see its members`);
       }
       if (own.has(rule.maker.role) && own.has(rule.checker.role)) errs.add(`group ${p} grants both ${rule.maker.role} and ${rule.checker.role}; a group is one side of the ${rule.what} only`);
-      if (p === `/staff/${name}` && name.startsWith(rule.prefix) && !rule.maker.groups.test(name) && !rule.checker.groups.test(name)) {
-        errs.add(`group ${p} is under the ${rule.prefix}* prefix but matches neither side of the ${rule.what}; add it to SOD_RULES or rename it, or the separation check does not see its members`);
+    }
+    // Rules may share a prefix (fbx-cmp-: compliance and fraud), so a group
+    // under a prefix must match a side of some rule with that prefix.
+    for (const prefix of new Set(SOD_RULES.map((r) => r.prefix))) {
+      const rules = SOD_RULES.filter((r) => r.prefix === prefix);
+      if (p === `/staff/${name}` && name.startsWith(prefix) && !rules.some((r) => r.maker.groups.test(name) || r.checker.groups.test(name))) {
+        errs.add(`group ${p} is under the ${prefix}* prefix but matches neither side of the ${rules.map((r) => r.what).join(" or the ")}; add it to SOD_RULES or rename it, or the separation check does not see its members`);
       }
     }
   }
