@@ -357,6 +357,30 @@
         "description": "Compliance and AML officer (staff, LDAP group fbx-compliance-officer).",
         "composite": false,
         "clientRole": false
+      },
+      {
+        "name": "sod_cmp_maker",
+        "description": "Separation-of-duties marker: maker side of the compliance maker and checker queues. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "sod_cmp_checker",
+        "description": "Separation-of-duties marker: checker side of the compliance maker and checker queues. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "sod_pay_maker",
+        "description": "Separation-of-duties marker: maker side of the payment operations and supervisor queues. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "sod_pay_checker",
+        "description": "Separation-of-duties marker: checker side of the payment operations and supervisor queues. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.",
+        "composite": false,
+        "clientRole": false
       }
     ]
   },
@@ -415,6 +439,96 @@
           ],
           "attributes": {},
           "subGroups": []
+        },
+        {
+          "name": "fbx-cmp-ae-onboarding-l1",
+          "path": "/staff/fbx-cmp-ae-onboarding-l1",
+          "realmRoles": [
+            "sod_cmp_maker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-cmp-tr-onboarding-l1",
+          "path": "/staff/fbx-cmp-tr-onboarding-l1",
+          "realmRoles": [
+            "sod_cmp_maker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-cmp-review-l1",
+          "path": "/staff/fbx-cmp-review-l1",
+          "realmRoles": [
+            "sod_cmp_maker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-cmp-ae-mlro",
+          "path": "/staff/fbx-cmp-ae-mlro",
+          "realmRoles": [
+            "sod_cmp_checker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-cmp-tr-compliance-officer",
+          "path": "/staff/fbx-cmp-tr-compliance-officer",
+          "realmRoles": [
+            "sod_cmp_checker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-cmp-review-l2",
+          "path": "/staff/fbx-cmp-review-l2",
+          "realmRoles": [
+            "sod_cmp_checker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-pay-tr-fast-ops",
+          "path": "/staff/fbx-pay-tr-fast-ops",
+          "realmRoles": [
+            "sod_pay_maker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-pay-ops-l1",
+          "path": "/staff/fbx-pay-ops-l1",
+          "realmRoles": [
+            "sod_pay_maker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-pay-tr-fast-supervisor",
+          "path": "/staff/fbx-pay-tr-fast-supervisor",
+          "realmRoles": [
+            "sod_pay_checker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-pay-ops-l2",
+          "path": "/staff/fbx-pay-ops-l2",
+          "realmRoles": [
+            "sod_pay_checker"
+          ],
+          "attributes": {},
+          "subGroups": []
         }
       ]
     },
@@ -431,7 +545,7 @@
   "authenticationFlows": [
     {
       "alias": "fbx-staff-browser",
-      "description": "Staff web browser flow: sign in, then deny any user without a staff role",
+      "description": "Staff web browser flow: sign in, then deny any user without a staff role or in a maker and its checker queue",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
@@ -448,6 +562,20 @@
           "flowAlias": "fbx-staff-browser staff only",
           "requirement": "CONDITIONAL",
           "priority": 20,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-staff-browser sod cmp",
+          "requirement": "CONDITIONAL",
+          "priority": 30,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-staff-browser sod pay",
+          "requirement": "CONDITIONAL",
+          "priority": 40,
           "userSetupAllowed": false
         }
       ]
@@ -578,8 +706,72 @@
       ]
     },
     {
+      "alias": "fbx-staff-browser sod cmp",
+      "description": "Deny access to a user in both the compliance maker and checker queues (sod_cmp_maker and sod_cmp_checker)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser has sod_cmp_maker"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser has sod_cmp_checker"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-staff-browser sod pay",
+      "description": "Deny access to a user in both the payment operations and supervisor queues (sod_pay_maker and sod_pay_checker)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser has sod_pay_maker"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser has sod_pay_checker"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
       "alias": "fbx-reset-credentials",
-      "description": "Reset credentials (the built-in flow), with the staff check for staff channel clients after the e-mail step",
+      "description": "Reset credentials (the built-in flow), with the staff and queue checks for staff channel clients after the e-mail step",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
@@ -606,6 +798,20 @@
           "userSetupAllowed": false
         },
         {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-reset-credentials sod cmp",
+          "requirement": "CONDITIONAL",
+          "priority": 31,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-reset-credentials sod pay",
+          "requirement": "CONDITIONAL",
+          "priority": 32,
+          "userSetupAllowed": false
+        },
+        {
           "authenticator": "reset-password",
           "authenticatorFlow": false,
           "requirement": "REQUIRED",
@@ -617,6 +823,86 @@
           "flowAlias": "fbx-reset-credentials OTP",
           "requirement": "CONDITIONAL",
           "priority": 50,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-reset-credentials sod cmp",
+      "description": "Deny access to a user in both the compliance maker and checker queues (sod_cmp_maker and sod_cmp_checker)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-client-scope",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials staff channel"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials has sod_cmp_maker"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials has sod_cmp_checker"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-reset-credentials sod pay",
+      "description": "Deny access to a user in both the payment operations and supervisor queues (sod_pay_maker and sod_pay_checker)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-client-scope",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials staff channel"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials has sod_pay_maker"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials has sod_pay_checker"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
           "userSetupAllowed": false
         }
       ]
@@ -785,6 +1071,62 @@
       "config": {
         "condUserRole": "compliance_officer",
         "negate": "true"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser has sod_cmp_maker",
+      "config": {
+        "condUserRole": "sod_cmp_maker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser has sod_cmp_checker",
+      "config": {
+        "condUserRole": "sod_cmp_checker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser has sod_pay_maker",
+      "config": {
+        "condUserRole": "sod_pay_maker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser has sod_pay_checker",
+      "config": {
+        "condUserRole": "sod_pay_checker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials has sod_cmp_maker",
+      "config": {
+        "condUserRole": "sod_cmp_maker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials has sod_cmp_checker",
+      "config": {
+        "condUserRole": "sod_cmp_checker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials has sod_pay_maker",
+      "config": {
+        "condUserRole": "sod_pay_maker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials has sod_pay_checker",
+      "config": {
+        "condUserRole": "sod_pay_checker",
+        "negate": "false"
       }
     }
   ],

@@ -138,6 +138,24 @@ Verified locally against Keycloak 26.7.5 (realm imported with the pinned keycloa
 
 The script and config-cli are independent: a re-run of the import keeps the permissions (checked locally), and a permission removed from `admin-permissions.json` is **not** deleted from Keycloak (the script never deletes; remove it in the admin console under Permissions).
 
+## Separation of duties for bpo staff queues (user decision 2026-10-19)
+
+**Rule (go-live item G-S1).** One person may not work both the maker and the checker side of a bpo staff queue. The project owner chose on 2026-10-19 that identity enforces this at sign-in and that the bpo API also refuses the same person on both sides of one task. The pairs are:
+
+- compliance: `fbx-cmp-<jurisdiction>-onboarding-l1` or `fbx-cmp-review-l1` (maker) against `fbx-cmp-<jurisdiction>-mlro`, `fbx-cmp-tr-compliance-officer` or `fbx-cmp-review-l2` (checker);
+- payments: `fbx-pay-tr-fast-ops` or `fbx-pay-ops-l1` (maker) against `fbx-pay-tr-fast-supervisor` or `fbx-pay-ops-l2` (checker).
+
+**How it is built.** Each queue is a directory group with `cn` `fbx-<queue>`, so the LDAP group mapper lands it at `/staff/fbx-<queue>`. In the realm file each queue group grants one marker realm role: `sod_cmp_maker`, `sod_cmp_checker`, `sod_pay_maker` or `sod_pay_checker` (`SOD_RULES` in `service-client-rules.mjs`). The staff browser flow `fbx-staff-browser` runs one conditional subflow per rule after the staff check (`fbx-staff-browser sod cmp`, `fbx-staff-browser sod pay`): two `conditional-user-role` conditions, maker role and checker role, not negated, which Keycloak ANDs, then `deny-access-authenticator`. A user in both a maker and a checker group of one rule is denied. The reset flow `fbx-reset-credentials` runs the same subflows for staff channel clients (marker scope `fbx-staff-channel`) after the staff check and before the new password. The realm keeps `editUsernameAllowed` `false`, and staff are federated from a read-only LDAP provider, so `preferred_username` does not change through Keycloak.
+
+**Gate.** `check-realm.mjs` and the live modes refuse a missing marker role (an unknown role makes the condition false for every user, so the check would let everyone through) and any difference in the subflows. They also refuse `editUsernameAllowed` other than `false`, absent or a string Jackson reads as false. In the realm file they refuse a `/staff/fbx-*` group whose name matches a maker or checker pattern but does not grant its marker, and a group that grants both markers of one rule.
+
+**Limits.**
+
+- The check runs at sign-in and at password reset only. A session that started before a person was added to the second group keeps refreshing until it ends (8 hours at most), and LDAP caching can delay a group change, as item (5) under "What the realm contains" describes. The bpo API's own refusal covers that window.
+- A queue group must be defined in the realm file to carry its marker. A directory group `fbx-<queue>` that the realm file does not define reaches Keycloak with no role, so the separation check does not see it. The live modes read no groups, so this is a static guarantee only.
+- The check applies only to clients whose browser flow is `fbx-staff-browser`. A bpo staff UI client must use that flow, and its users still need a staff role to pass the staff check.
+- `preferred_username` comes from the directory, so a rename in the directory changes it. Audit trails that must survive a rename should also record `sub`.
+
 ## Applying the realm
 
 `deploy/kustomize/base/realm-import/job.yaml` runs keycloak-config-cli 6.5.1 (image pinned by digest) as an initContainer with `IMPORT_VARSUBSTITUTION_ENABLED=true`, then `apply-admin-permissions.mjs` (initContainer) and `onboard-tpp.mjs --verify-live --registry` (container: TPP onboarding, then the TPP and service-client rules on the running realm), both in `node:22.22.0-alpine3.22` (pinned by digest) and receiving only the bootstrap admin client credential. Non-secret inputs come from ConfigMap `keycloak-realm-import-env` (overlay-specific), secret inputs from ExternalSecret `keycloak-realm-import` (admin client, LDAP bind, 17 client credentials: the 16 service clients and the Grafana SSO client). keycloak-config-cli keeps remote state, so a client removed from Git is removed from Keycloak, while clients created outside the realm file (the onboarded TPPs) are left alone. The script never deletes a TPP client.

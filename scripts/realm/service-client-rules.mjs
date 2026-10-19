@@ -308,6 +308,36 @@ export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c
 // check, and direct grant through the realm's direct grant flow, so the realm
 // allows neither and staff channel clients keep direct grant off.
 export const STAFF_ROLES = ["banker", "loan_officer", "admin", "auditor", "compliance_officer"];
+
+// Separation of duties for the bpo staff queues (go-live item G-S1, the
+// user's decision of 2026-10-19 in the bpo staff UI thread). One person must
+// not hold a maker queue and its checker queue: compliance onboarding or
+// first-line review against MLRO, compliance officer or second-line review,
+// and payment operations against their supervisors. Each queue is a
+// directory group (cn=fbx-<queue>, imported read-only under /staff); the
+// group grants its side's marker realm role, and the staff sign-in flows end
+// with one conditional subflow per rule whose two (ANDed) role conditions
+// hold only for a user with both markers, then deny-access-authenticator. So
+// a user put in both queues cannot sign in to a staff channel client at all,
+// whatever else they hold. The check runs at sign-in, like the staff check: a
+// session that started before the second group was added keeps refreshing
+// until it ends (8 h at most), and the bpo API refuses the same person
+// claiming both tasks. Keycloak's role condition is false for a role it
+// cannot resolve, which would turn a deny off, so every marker must exist as
+// a realm role; and a queue group the realm file does not define (a new
+// directory group) carries no marker, so every /staff group whose name
+// matches a rule's pattern must grant that side's marker. Usernames
+// (preferred_username) are immutable: editUsernameAllowed must be false, and
+// the LDAP provider is read-only.
+export const SOD_RULES = [
+  { id: "cmp", what: "compliance maker and checker queues",
+    maker: { role: "sod_cmp_maker", groups: /^fbx-cmp-([a-z]+-onboarding-l1|review-l1)$/ },
+    checker: { role: "sod_cmp_checker", groups: /^fbx-cmp-([a-z]+-mlro|tr-compliance-officer|review-l2)$/ } },
+  { id: "pay", what: "payment operations and supervisor queues",
+    maker: { role: "sod_pay_maker", groups: /^fbx-pay-(tr-fast-ops|ops-l1)$/ },
+    checker: { role: "sod_pay_checker", groups: /^fbx-pay-(tr-fast-supervisor|ops-l2)$/ } }
+];
+export const SOD_ROLES = SOD_RULES.flatMap((r) => [r.maker.role, r.checker.role]);
 export const STAFF_BROWSER_FLOW = "fbx-staff-browser";
 export const STAFF_RESET_FLOW = "fbx-reset-credentials";
 export const STAFF_CHANNEL_SCOPE = "fbx-staff-channel";
@@ -326,17 +356,26 @@ export function staffSignInFlows(roles = STAFF_ROLES) {
   const flow = (alias, topLevel, description, authenticationExecutions) => ({ alias, description, providerId: "basic-flow", topLevel, builtIn: false, authenticationExecutions });
   const notRole = (r) => `${A} not ${r}`;
   const resetNotRole = (r) => `${R} not ${r}`;
+  const hasRole = (r) => `${A} has ${r}`;
+  const resetHasRole = (r) => `${R} has ${r}`;
+  const sodFlow = (top, has, rule, first = []) => flow(`${top} sod ${rule.id}`, false, `Deny access to a user in both the ${rule.what} (${rule.maker.role} and ${rule.checker.role})`,
+    [...first, step("conditional-user-role", "REQUIRED", 10 * (first.length + 1), has(rule.maker.role)), step("conditional-user-role", "REQUIRED", 10 * (first.length + 2), has(rule.checker.role)),
+      step("deny-access-authenticator", "REQUIRED", 10 * (first.length + 3))]);
   return {
     authenticationFlows: [
-      flow(A, true, "Staff web browser flow: sign in, then deny any user without a staff role", [sub(`${A} sign-in`, "REQUIRED", 10), sub(`${A} staff only`, "CONDITIONAL", 20)]),
+      flow(A, true, "Staff web browser flow: sign in, then deny any user without a staff role or in a maker and its checker queue",
+        [sub(`${A} sign-in`, "REQUIRED", 10), sub(`${A} staff only`, "CONDITIONAL", 20), ...SOD_RULES.map((r, i) => sub(`${A} sod ${r.id}`, "CONDITIONAL", 30 + 10 * i))]),
       flow(`${A} sign-in`, false, "SSO cookie, else username and password", [step("auth-cookie", "ALTERNATIVE", 10), sub(`${A} forms`, "ALTERNATIVE", 20)]),
       flow(`${A} forms`, false, "Username and password, then OTP when the user has one", [step("auth-username-password-form", "REQUIRED", 10), sub(`${A} OTP`, "CONDITIONAL", 20)]),
       flow(`${A} OTP`, false, "OTP when the user has one configured", [step("conditional-user-configured", "REQUIRED", 10), step("auth-otp-form", "REQUIRED", 20)]),
       flow(`${A} staff only`, false, `Deny access to a user without any of ${roles.join(", ")}`,
         [...roles.map((r, i) => step("conditional-user-role", "REQUIRED", 10 * (i + 1), notRole(r))), step("deny-access-authenticator", "REQUIRED", 10 * (roles.length + 1))]),
-      flow(R, true, "Reset credentials (the built-in flow), with the staff check for staff channel clients after the e-mail step",
+      ...SOD_RULES.map((r) => sodFlow(A, hasRole, r)),
+      flow(R, true, "Reset credentials (the built-in flow), with the staff and queue checks for staff channel clients after the e-mail step",
         [step("reset-credentials-choose-user", "REQUIRED", 10), step("reset-credential-email", "REQUIRED", 20), sub(`${R} staff only`, "CONDITIONAL", 30),
+          ...SOD_RULES.map((r, i) => sub(`${R} sod ${r.id}`, "CONDITIONAL", 31 + i)),
           step("reset-password", "REQUIRED", 40), sub(`${R} OTP`, "CONDITIONAL", 50)]),
+      ...SOD_RULES.map((r) => sodFlow(R, resetHasRole, r, [step("conditional-client-scope", "REQUIRED", 10, `${R} staff channel`)])),
       flow(`${R} staff only`, false, `At a client with ${STAFF_CHANNEL_SCOPE}, deny access to a user without any of ${roles.join(", ")}`,
         [step("conditional-client-scope", "REQUIRED", 10, `${R} staff channel`), ...roles.map((r, i) => step("conditional-user-role", "REQUIRED", 10 * (i + 2), resetNotRole(r))),
           step("deny-access-authenticator", "REQUIRED", 10 * (roles.length + 2))]),
@@ -345,7 +384,9 @@ export function staffSignInFlows(roles = STAFF_ROLES) {
     authenticatorConfig: [
       ...roles.map((r) => ({ alias: notRole(r), config: { condUserRole: r, negate: "true" } })),
       { alias: `${R} staff channel`, config: { client_scope: STAFF_CHANNEL_SCOPE, negate: "false" } },
-      ...roles.map((r) => ({ alias: resetNotRole(r), config: { condUserRole: r, negate: "true" } }))
+      ...roles.map((r) => ({ alias: resetNotRole(r), config: { condUserRole: r, negate: "true" } })),
+      ...SOD_ROLES.map((r) => ({ alias: hasRole(r), config: { condUserRole: r, negate: "false" } })),
+      ...SOD_ROLES.map((r) => ({ alias: resetHasRole(r), config: { condUserRole: r, negate: "false" } }))
     ]
   };
 }
@@ -415,6 +456,9 @@ export function staffSignInErrors(realm, registry) {
     for (const r of STAFF_ROLES) {
       if (!realmRoles.has(r)) errs.add(`flow ${STAFF_BROWSER_FLOW}: realm role ${r} does not exist; Keycloak's role condition is then false for every user and the flow lets everyone through`);
     }
+    for (const r of SOD_ROLES) {
+      if (!realmRoles.has(r)) errs.add(`flow ${STAFF_BROWSER_FLOW}: realm role ${r} does not exist; Keycloak's role condition is then false for every user and the queue separation check lets everyone through`);
+    }
   }
   const reach = roleReach(realm);
   const staffReached = (seeds) => { const seen = reach(seeds); return STAFF_ROLES.filter((r) => seen.has(roleKey(null, r))); };
@@ -450,6 +494,19 @@ export function staffSignInErrors(realm, registry) {
     }
   };
   groupErrors(realm.groups);
+  // Separation of duties: every /staff queue group of a rule grants that
+  // side's marker, and no group (with its parents) holds both markers of a
+  // rule (realm file only, like the group checks above).
+  for (const [p, seeds] of groupSeeds) {
+    const own = new Set(seeds.filter(([c]) => c === null).map(([, n]) => n));
+    const name = p.split("/").pop();
+    for (const rule of SOD_RULES) {
+      for (const side of [rule.maker, rule.checker]) {
+        if (p === `/staff/${name}` && side.groups.test(name) && !own.has(side.role)) errs.add(`group ${p} is one of the ${rule.what} and must grant realm role ${side.role}; without it the separation check does not see its members`);
+      }
+      if (own.has(rule.maker.role) && own.has(rule.checker.role)) errs.add(`group ${p} grants both ${rule.maker.role} and ${rule.checker.role}; a group is one side of the ${rule.what} only`);
+    }
+  }
   // A user of the realm file is a local user, not one of the directory, so it
   // holds no staff role: not directly, not through composites, not through any
   // group or its parents (/staff/fbx-* included). Service accounts (users with
@@ -471,6 +528,10 @@ export function staffSignInErrors(realm, registry) {
   const v = realm.registrationAllowed;
   if (!(v === false || v === undefined || (typeof v === "string" && ["false", "False", "FALSE"].includes(v.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, ""))))) {
     errs.add("realm: registrationAllowed must be false (self-registration signs the new user in to the client it started from, staff web included, without the staff check)");
+  }
+  const eu = realm.editUsernameAllowed;
+  if (!(eu === false || eu === undefined || (typeof eu === "string" && ["false", "False", "FALSE"].includes(eu.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, ""))))) {
+    errs.add("realm: editUsernameAllowed must be false (the bpo queues and audit trails key on preferred_username, which must not change)");
   }
   for (const idp of realm.identityProviders || []) {
     errs.add(`realm: identity provider ${idp.alias} signs users in to any client without the staff check; this realm has none`);

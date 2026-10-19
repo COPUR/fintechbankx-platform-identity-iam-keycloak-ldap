@@ -643,6 +643,7 @@ function liveRealm() {
     authenticatorConfig: realm.authenticatorConfig.map((c) => ({ id: `id-${c.alias}`, ...c })),
     resetCredentialsFlow: realm.resetCredentialsFlow,
     registrationAllowed: realm.registrationAllowed,
+    editUsernameAllowed: realm.editUsernameAllowed,
     identityProviders: [],
     clientScopes: [...realm.clientScopes, ...builtInScopes].map((sc) => ({ id: `id-${sc.name}`, ...sc })),
     defaultDefaultClientScopes: [...realm.defaultDefaultClientScopes],
@@ -710,7 +711,7 @@ function adminApi(live) {
     if (p === "/client-scopes") return json(live.clientScopes);
     if (p === "/default-default-client-scopes") return json(live.defaultDefaultClientScopes.map((name) => ({ id: `id-${name}`, name })));
     if (p === "/default-optional-client-scopes") return json(live.defaultOptionalClientScopes.map((name) => ({ id: `id-${name}`, name })));
-    if (p === "") return json({ realm: "fintechbankx", resetCredentialsFlow: live.resetCredentialsFlow, registrationAllowed: live.registrationAllowed, defaultRole: live.defaultRole });
+    if (p === "") return json({ realm: "fintechbankx", resetCredentialsFlow: live.resetCredentialsFlow, registrationAllowed: live.registrationAllowed, editUsernameAllowed: live.editUsernameAllowed, defaultRole: live.defaultRole });
     if (p === "/identity-provider/instances") return json(live.identityProviders || []);
     if (p === "/roles") return json(live.roles.realm.map((r) => roleRep(null, r)));
     // Keycloak 26.7.5 lists the top-level flows but saml ecp
@@ -1067,7 +1068,8 @@ test("staff web signs in only users with a staff role: browser flow fbx-staff-br
   for (const id of ["fintechbankx-web", "fintechbankx-mobile"]) assert.equal(client({ realm }, id).authenticationFlowBindingOverrides, undefined, id);
   const steps = (alias) => flowOf(realm, alias).authenticationExecutions.map((e) => `${e.requirement} ${e.authenticatorFlow ? `flow:${e.flowAlias}` : e.authenticator}`);
   assert.equal(flowOf(realm, STAFF_FLOW).topLevel, true);
-  assert.deepEqual(steps(STAFF_FLOW), [`REQUIRED flow:${STAFF_FLOW} sign-in`, `CONDITIONAL flow:${STAFF_FLOW} staff only`]);
+  assert.deepEqual(steps(STAFF_FLOW), [`REQUIRED flow:${STAFF_FLOW} sign-in`, `CONDITIONAL flow:${STAFF_FLOW} staff only`,
+    `CONDITIONAL flow:${STAFF_FLOW} sod cmp`, `CONDITIONAL flow:${STAFF_FLOW} sod pay`]);
   assert.deepEqual(steps(`${STAFF_FLOW} sign-in`), ["ALTERNATIVE auth-cookie", `ALTERNATIVE flow:${STAFF_FLOW} forms`]);
   assert.deepEqual(steps(`${STAFF_FLOW} forms`), ["REQUIRED auth-username-password-form", `CONDITIONAL flow:${STAFF_FLOW} OTP`]);
   assert.deepEqual(steps(`${STAFF_FLOW} OTP`), ["REQUIRED conditional-user-configured", "REQUIRED auth-otp-form"]);
@@ -1086,7 +1088,7 @@ test("staff web signs in only users with a staff role: browser flow fbx-staff-br
   assert.equal(realm.resetCredentialsFlow, RESET_FLOW);
   assert.equal(flowOf(realm, RESET_FLOW).topLevel, true);
   assert.deepEqual(steps(RESET_FLOW), ["REQUIRED reset-credentials-choose-user", "REQUIRED reset-credential-email", `CONDITIONAL flow:${RESET_FLOW} staff only`,
-    "REQUIRED reset-password", `CONDITIONAL flow:${RESET_FLOW} OTP`]);
+    `CONDITIONAL flow:${RESET_FLOW} sod cmp`, `CONDITIONAL flow:${RESET_FLOW} sod pay`, "REQUIRED reset-password", `CONDITIONAL flow:${RESET_FLOW} OTP`]);
   assert.deepEqual(steps(`${RESET_FLOW} OTP`), ["REQUIRED conditional-user-configured", "REQUIRED reset-otp"]);
   assert.deepEqual(steps(`${RESET_FLOW} staff only`), ["REQUIRED conditional-client-scope", ...STAFF.map(() => "REQUIRED conditional-user-role"), "REQUIRED deny-access-authenticator"]);
   const cfg = (e) => realm.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig).config;
@@ -1250,7 +1252,7 @@ test("the staff flows compare as structures: a config value or key holding ',' o
   const input = fresh();
   input.realm.authenticatorConfig.find((c) => c.config.client_scope === MARKER).config = structuredClone(MARKER_SPOOF);
   const errors = checkRealm(input);
-  assert.ok(errors.some((x) => x.startsWith(resetDiffers) && x.endsWith(`: ${markerDiff}`)), errors.join("\n"));
+  assert.ok(errors.some((x) => x.startsWith(resetDiffers) && x.includes(`: ${markerDiff}`)), errors.join("\n"));
 });
 
 test("live: the staff flows compare as structures, the same through the admin API and a partial export", async () => {
@@ -1263,7 +1265,7 @@ test("live: the staff flows compare as structures, the same through the admin AP
   const live = liveRealm();
   live.authenticatorConfig.find((c) => c.config.client_scope === MARKER).config = structuredClone(MARKER_SPOOF);
   const errors = await liveErrors(live);
-  assert.ok(errors.some((x) => x.startsWith(resetDiffers) && x.endsWith(`: ${markerDiff}`)), errors.join("\n"));
+  assert.ok(errors.some((x) => x.startsWith(resetDiffers) && x.includes(`: ${markerDiff}`)), errors.join("\n"));
 });
 
 // Review finding (major): Keycloak's role condition asks hasRole, which counts
@@ -2176,4 +2178,71 @@ test("the Job's tpp-onboarding step against a mock admin API passes the complian
     assert.ok(r.stderr.includes(`onboard-tpp: live: ${expected}`), `${name}: ${r.stderr}`);
     assert.match(r.stderr, /onboard-tpp: FAILED/, name);
   }
+});
+
+// Separation of duties (G-S1, user decision 2026-10-19): a member of a maker
+// queue group must not also be in a checker queue group of the same rule.
+// Queue groups grant marker roles; one deny subflow per rule runs after the
+// staff check at sign-in and, for staff channel clients, at password reset.
+const SOD = { cmp: ["sod_cmp_maker", "sod_cmp_checker"], pay: ["sod_pay_maker", "sod_pay_checker"] };
+const staffGroup = (r, name) => r.groups.find((g) => g.name === "staff").subGroups.find((g) => g.name === name);
+
+test("separation of duties: maker and checker queue groups grant marker roles, and one deny subflow per rule runs at sign-in and reset", () => {
+  const { realm } = fresh();
+  const roleNames = realm.roles.realm.map((r) => r.name);
+  for (const roles of Object.values(SOD)) for (const r of roles) assert.ok(roleNames.includes(r), r);
+  const grants = Object.fromEntries(realm.groups.find((g) => g.name === "staff").subGroups.map((g) => [g.name, g.realmRoles]));
+  for (const g of ["fbx-cmp-ae-onboarding-l1", "fbx-cmp-tr-onboarding-l1", "fbx-cmp-review-l1"]) assert.deepEqual(grants[g], ["sod_cmp_maker"], g);
+  for (const g of ["fbx-cmp-ae-mlro", "fbx-cmp-tr-compliance-officer", "fbx-cmp-review-l2"]) assert.deepEqual(grants[g], ["sod_cmp_checker"], g);
+  for (const g of ["fbx-pay-tr-fast-ops", "fbx-pay-ops-l1"]) assert.deepEqual(grants[g], ["sod_pay_maker"], g);
+  for (const g of ["fbx-pay-tr-fast-supervisor", "fbx-pay-ops-l2"]) assert.deepEqual(grants[g], ["sod_pay_checker"], g);
+  const cfg = (e) => realm.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig)?.config;
+  const shape = (alias) => flowOf(realm, alias).authenticationExecutions.map((e) => [e.requirement, e.authenticator, cfg(e)]);
+  for (const [id, [maker, checker]] of Object.entries(SOD)) {
+    assert.deepEqual(shape(`${STAFF_FLOW} sod ${id}`), [
+      ["REQUIRED", "conditional-user-role", { condUserRole: maker, negate: "false" }],
+      ["REQUIRED", "conditional-user-role", { condUserRole: checker, negate: "false" }],
+      ["REQUIRED", "deny-access-authenticator", undefined]]);
+    assert.deepEqual(shape(`${RESET_FLOW} sod ${id}`), [
+      ["REQUIRED", "conditional-client-scope", { client_scope: MARKER, negate: "false" }],
+      ["REQUIRED", "conditional-user-role", { condUserRole: maker, negate: "false" }],
+      ["REQUIRED", "conditional-user-role", { condUserRole: checker, negate: "false" }],
+      ["REQUIRED", "deny-access-authenticator", undefined]]);
+  }
+  assert.equal(realm.editUsernameAllowed, false);
+});
+
+test("separation of duties: the gate refuses a missing marker role, a queue group without its marker, a group with both markers, a weakened deny subflow and editable usernames", () => {
+  const cases = [
+    ["marker role missing", (r) => { r.roles.realm = r.roles.realm.filter((x) => x.name !== "sod_pay_checker"); }, `flow ${STAFF_FLOW}: realm role sod_pay_checker does not exist`],
+    ["checker queue without its marker", (r) => { staffGroup(r, "fbx-cmp-ae-mlro").realmRoles = []; }, "group /staff/fbx-cmp-ae-mlro is one of the compliance maker and checker queues and must grant realm role sod_cmp_checker"],
+    ["a new maker queue without its marker", (r) => { r.groups.find((g) => g.name === "staff").subGroups.push({ name: "fbx-cmp-sa-onboarding-l1", path: "/staff/fbx-cmp-sa-onboarding-l1", realmRoles: [], subGroups: [] }); },
+      "group /staff/fbx-cmp-sa-onboarding-l1 is one of the compliance maker and checker queues and must grant realm role sod_cmp_maker"],
+    ["a group with both markers", (r) => { staffGroup(r, "fbx-pay-ops-l1").realmRoles = ["sod_pay_maker", "sod_pay_checker"]; }, "group /staff/fbx-pay-ops-l1 grants both sod_pay_maker and sod_pay_checker"],
+    ["sod subflow dropped", (r) => { const f = flowOf(r, STAFF_FLOW); f.authenticationExecutions = f.authenticationExecutions.filter((e) => e.flowAlias !== `${STAFF_FLOW} sod cmp`); }, flowDiffers],
+    ["sod subflow disabled", (r) => { flowOf(r, STAFF_FLOW).authenticationExecutions.find((e) => e.flowAlias === `${STAFF_FLOW} sod pay`).requirement = "DISABLED"; }, flowDiffers],
+    ["sod deny disabled", (r) => { flowOf(r, `${STAFF_FLOW} sod cmp`).authenticationExecutions.at(-1).requirement = "DISABLED"; }, flowDiffers],
+    ["sod condition negated", (r) => { r.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} has sod_cmp_checker`).config.negate = "true"; }, flowDiffers],
+    ["sod condition on another role", (r) => { r.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} has sod_pay_maker`).config.condUserRole = "banker"; }, flowDiffers],
+    ["reset sod subflow dropped", (r) => { const f = flowOf(r, RESET_FLOW); f.authenticationExecutions = f.authenticationExecutions.filter((e) => e.flowAlias !== `${RESET_FLOW} sod pay`); }, resetDiffers],
+    ...[true, "true", " TRUE", 1].map((v) => [`editUsernameAllowed ${JSON.stringify(v)}`, (r) => { r.editUsernameAllowed = v; }, "realm: editUsernameAllowed must be false"])
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const input = fresh();
+    mutate(input.realm);
+    const errors = checkRealm(input);
+    assert.ok(errors.some((e) => e.startsWith(expected)), `${name}: ${expected} not in\n${errors.join("\n")}`);
+  }
+  for (const v of [false, undefined, "False"]) {
+    const input = fresh();
+    input.realm.editUsernameAllowed = v;
+    assert.deepEqual(checkRealm(input), [], `editUsernameAllowed ${JSON.stringify(v)}`);
+  }
+});
+
+test("live: editUsernameAllowed true is refused through the admin API and a partial export", async () => {
+  const live = liveRealm();
+  live.editUsernameAllowed = true;
+  const errors = await liveErrors(live);
+  assert.ok(errors.some((x) => x.startsWith("realm: editUsernameAllowed must be false")), errors.join("\n"));
 });

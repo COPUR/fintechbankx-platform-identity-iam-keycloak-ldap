@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { STAFF_BROWSER_FLOW, STAFF_CHANNEL_SCOPE, STAFF_RESET_FLOW, STAFF_ROLES, staffChannelScope, staffSignInFlows } from "./service-client-rules.mjs";
+import { SOD_RULES, STAFF_BROWSER_FLOW, STAFF_CHANNEL_SCOPE, STAFF_RESET_FLOW, STAFF_ROLES, staffChannelScope, staffSignInFlows } from "./service-client-rules.mjs";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const checkOnly = process.argv.includes("--check");
 const manifest = JSON.parse(fs.readFileSync(`${repo}/realm/service-clients.json`, "utf8"));
@@ -22,7 +22,11 @@ const roles = [
   ["admin", "Platform or business administrator (staff, LDAP group fbx-admin)."],
   ["service", "Machine identity of a FinTechBankX service (client-credentials service accounts only)."],
   ["auditor", "Internal or external auditor, read-only evidence access (staff, LDAP group fbx-auditor)."],
-  ["compliance_officer", "Compliance and AML officer (staff, LDAP group fbx-compliance-officer)."]
+  ["compliance_officer", "Compliance and AML officer (staff, LDAP group fbx-compliance-officer)."],
+  ...SOD_RULES.flatMap((r) => [
+    [r.maker.role, `Separation-of-duties marker: maker side of the ${r.what}. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.`],
+    [r.checker.role, `Separation-of-duties marker: checker side of the ${r.what}. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.`]
+  ])
 ];
 
 const staffGroups = [
@@ -30,7 +34,19 @@ const staffGroups = [
   ["fbx-loan-officer", ["loan_officer"]],
   ["fbx-admin", ["admin"]],
   ["fbx-auditor", ["auditor"]],
-  ["fbx-compliance-officer", ["compliance_officer"]]
+  ["fbx-compliance-officer", ["compliance_officer"]],
+  // bpo staff queues (directory groups cn=fbx-<queue>): each grants only its
+  // side's separation-of-duties marker (service-client-rules.mjs SOD_RULES).
+  ["fbx-cmp-ae-onboarding-l1", ["sod_cmp_maker"]],
+  ["fbx-cmp-tr-onboarding-l1", ["sod_cmp_maker"]],
+  ["fbx-cmp-review-l1", ["sod_cmp_maker"]],
+  ["fbx-cmp-ae-mlro", ["sod_cmp_checker"]],
+  ["fbx-cmp-tr-compliance-officer", ["sod_cmp_checker"]],
+  ["fbx-cmp-review-l2", ["sod_cmp_checker"]],
+  ["fbx-pay-tr-fast-ops", ["sod_pay_maker"]],
+  ["fbx-pay-ops-l1", ["sod_pay_maker"]],
+  ["fbx-pay-tr-fast-supervisor", ["sod_pay_checker"]],
+  ["fbx-pay-ops-l2", ["sod_pay_checker"]]
 ];
 
 const audienceMappers = (audiences) => audiences.map((aud) => ({

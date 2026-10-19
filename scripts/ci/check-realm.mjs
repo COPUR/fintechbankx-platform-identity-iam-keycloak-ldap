@@ -14,10 +14,10 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { PAYMENTS_SCOPE, TPP_CLIENT_TYPE, CLIENT_TYPE_CLAIM, TPP_CLIENT_TYPE_SCOPE, DCR_SOURCES, DCR_POLICY_TYPE, tppClientErrors, clientTypeMappers, parseList } from "../realm/tpp-rules.mjs";
 import { fetchAdminToken } from "../realm/apply-admin-permissions.mjs";
-import { AUDIENCE_SCOPE, audiences, serviceClientErrors } from "../realm/service-client-rules.mjs";
+import { AUDIENCE_SCOPE, SOD_ROLES, audiences, serviceClientErrors } from "../realm/service-client-rules.mjs";
 import { liveExportView, fetchLiveView, liveRealmErrors } from "../realm/live-view.mjs";
 
-export const CONTRACT_ROLES = ["customer", "banker", "loan_officer", "admin", "service", "auditor", "compliance_officer"];
+export const CONTRACT_ROLES = ["customer", "banker", "loan_officer", "admin", "service", "auditor", "compliance_officer", ...SOD_ROLES];
 export const STAFF_ROLE_GROUPS = {
   "fbx-banker": "banker",
   "fbx-loan-officer": "loan_officer",

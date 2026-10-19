@@ -62,7 +62,7 @@ export function liveExportView(json) {
   for (const k of EXPORT_KEYS) if (!Array.isArray(json?.[k])) throw new Error(`--live-export: the export lacks ${k} (partial-export?exportClients=true&exportGroupsAndRoles=true)`);
   if (!json.roles || typeof json.roles !== "object") throw new Error("--live-export: the export lacks roles (partial-export with exportGroupsAndRoles=true)");
   return { ...Object.fromEntries(EXPORT_KEYS.map((k) => [k, json[k]])), roles: json.roles, scopeMappings: json.scopeMappings || [], clientScopeMappings: json.clientScopeMappings || {},
-    resetCredentialsFlow: json.resetCredentialsFlow, registrationAllowed: json.registrationAllowed, identityProviders: json.identityProviders || [],
+    resetCredentialsFlow: json.resetCredentialsFlow, registrationAllowed: json.registrationAllowed, editUsernameAllowed: json.editUsernameAllowed, identityProviders: json.identityProviders || [],
     defaultRole: json.defaultRole, ...exportFlows(json.authenticationFlows, json.authenticatorConfig || []) };
 }
 
@@ -110,6 +110,7 @@ export async function fetchLiveView({ fetch = globalThis.fetch, baseUrl, token, 
   const realmRep = await get("");
   view.resetCredentialsFlow = realmRep.resetCredentialsFlow;
   view.registrationAllowed = realmRep.registrationAllowed;
+  view.editUsernameAllowed = realmRep.editUsernameAllowed;
   view.defaultRole = realmRep.defaultRole;
   view.readErrors = [];
   const flowIds = new Set(view.authenticationFlows.map((f) => f.id));
