@@ -2180,8 +2180,9 @@ test("the Job's tpp-onboarding step against a mock admin API passes the complian
   }
 });
 
-// Separation of duties (G-S1, user decision 2026-10-19): a member of a maker
-// queue group must not also be in a checker queue group of the same rule.
+// Separation of duties (G-S1; decision recorded in the bpo repository,
+// docs/identity-requests.md): a member of a maker queue group must not also
+// be in a checker queue group of the same rule.
 // Queue groups grant marker roles; one deny subflow per rule runs after the
 // staff check at sign-in and, for staff channel clients, at password reset.
 const SOD = { cmp: ["sod_cmp_maker", "sod_cmp_checker"], pay: ["sod_pay_maker", "sod_pay_checker"] };
@@ -2224,6 +2225,23 @@ test("separation of duties: the gate refuses a missing marker role, a queue grou
     ["sod deny disabled", (r) => { flowOf(r, `${STAFF_FLOW} sod cmp`).authenticationExecutions.at(-1).requirement = "DISABLED"; }, flowDiffers],
     ["sod condition negated", (r) => { r.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} has sod_cmp_checker`).config.negate = "true"; }, flowDiffers],
     ["sod condition on another role", (r) => { r.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} has sod_pay_maker`).config.condUserRole = "banker"; }, flowDiffers],
+    // Queue names outside the patterns would carry no marker demand (fail-open).
+    ["an unknown group under fbx-cmp-", (r) => { r.groups.find((g) => g.name === "staff").subGroups.push({ name: "fbx-cmp-ae-reviewer", path: "/staff/fbx-cmp-ae-reviewer", realmRoles: [], subGroups: [] }); },
+      "group /staff/fbx-cmp-ae-reviewer is under the fbx-cmp-* prefix but matches neither side"],
+    ["an unknown group under fbx-pay-", (r) => { r.groups.find((g) => g.name === "staff").subGroups.push({ name: "fbx-pay-sepa-ops", path: "/staff/fbx-pay-sepa-ops", realmRoles: ["sod_pay_maker"], subGroups: [] }); },
+      "group /staff/fbx-pay-sepa-ops is under the fbx-pay-* prefix but matches neither side"],
+    ...["fbx-cmp-sa2-mlro", "fbx-cmp-ae-dxb-mlro"].map((n) => [`checker queue ${n} without its marker`, (r) => { r.groups.find((g) => g.name === "staff").subGroups.push({ name: n, path: `/staff/${n}`, realmRoles: [], subGroups: [] }); },
+      `group /staff/${n} is one of the compliance maker and checker queues and must grant realm role sod_cmp_checker`]),
+    // Markers come only from their queue groups.
+    ["a realm role with a marker in its composites", (r) => { Object.assign(r.roles.realm.find((x) => x.name === "auditor"), { composite: true, composites: { realm: ["sod_cmp_maker"] } }); },
+      "realm role auditor reaches marker role sod_cmp_maker through its composites"],
+    ["the default role reaches a marker", (r) => { r.roles.realm.push({ name: "default-roles-fintechbankx", composite: true, clientRole: false, composites: { realm: ["offline_access", "sod_pay_checker"] } }); },
+      "realm: default role default-roles-fintechbankx reaches marker role sod_pay_checker through its composites"],
+    ["a non-queue staff group grants a marker", (r) => { staffGroup(r, "fbx-banker").realmRoles = ["banker", "sod_cmp_checker"]; }, "group /staff/fbx-banker reaches marker role sod_cmp_checker"],
+    ["a queue group grants the other side's marker", (r) => { staffGroup(r, "fbx-pay-ops-l2").realmRoles = ["sod_pay_checker", "sod_cmp_maker"]; }, "group /staff/fbx-pay-ops-l2 reaches marker role sod_cmp_maker"],
+    ["a group outside /staff grants a marker", (r) => { r.groups.find((g) => g.name === "customers").realmRoles.push("sod_pay_maker"); }, "group /customers reaches marker role sod_pay_maker"],
+    ["a realm-file user holds a marker", (r) => { r.users.push({ username: "local1", enabled: true, realmRoles: ["sod_cmp_checker"] }); }, "user local1 holds marker role sod_cmp_checker"],
+    ["a realm-file user in a queue group", (r) => { r.users.push({ username: "local2", enabled: true, groups: ["/staff/fbx-pay-ops-l1"] }); }, "user local2 holds marker role sod_pay_maker"],
     ["reset sod subflow dropped", (r) => { const f = flowOf(r, RESET_FLOW); f.authenticationExecutions = f.authenticationExecutions.filter((e) => e.flowAlias !== `${RESET_FLOW} sod pay`); }, resetDiffers],
     ...[true, "true", " TRUE", 1].map((v) => [`editUsernameAllowed ${JSON.stringify(v)}`, (r) => { r.editUsernameAllowed = v; }, "realm: editUsernameAllowed must be false"])
   ];
@@ -2238,6 +2256,13 @@ test("separation of duties: the gate refuses a missing marker role, a queue grou
     input.realm.editUsernameAllowed = v;
     assert.deepEqual(checkRealm(input), [], `editUsernameAllowed ${JSON.stringify(v)}`);
   }
+});
+
+test("live: a marker role in the default role's or another role's composites is refused through the admin API and a partial export", async () => {
+  const live = liveRealm();
+  realmRoleOf(live, "default-roles-fintechbankx").composites.realm.push("sod_cmp_checker");
+  const errors = await liveErrors(live);
+  assert.ok(errors.some((x) => x.startsWith("realm: default role default-roles-fintechbankx reaches marker role sod_cmp_checker")), errors.join("\n"));
 });
 
 test("live: editUsernameAllowed true is refused through the admin API and a partial export", async () => {

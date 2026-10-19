@@ -309,8 +309,8 @@ export const fullScopeErrors = (c) => (c.fullScopeAllowed === false ? [] : [`${c
 // allows neither and staff channel clients keep direct grant off.
 export const STAFF_ROLES = ["banker", "loan_officer", "admin", "auditor", "compliance_officer"];
 
-// Separation of duties for the bpo staff queues (go-live item G-S1, the
-// user's decision of 2026-10-19 in the bpo staff UI thread). One person must
+// Separation of duties for the bpo staff queues (go-live item G-S1; decision
+// recorded in the bpo repository, docs/identity-requests.md). One person must
 // not hold a maker queue and its checker queue: compliance onboarding or
 // first-line review against MLRO, compliance officer or second-line review,
 // and payment operations against their supervisors. Each queue is a
@@ -321,19 +321,22 @@ export const STAFF_ROLES = ["banker", "loan_officer", "admin", "auditor", "compl
 // a user put in both queues cannot sign in to a staff channel client at all,
 // whatever else they hold. The check runs at sign-in, like the staff check: a
 // session that started before the second group was added keeps refreshing
-// until it ends (8 h at most), and the bpo API refuses the same person
-// claiming both tasks. Keycloak's role condition is false for a role it
+// until it ends (8 h at most). Refusing the same person on both sides of one
+// task inside that window is a requirement on the bpo service, not something
+// this realm provides. Keycloak's role condition is false for a role it
 // cannot resolve, which would turn a deny off, so every marker must exist as
-// a realm role; and a queue group the realm file does not define (a new
-// directory group) carries no marker, so every /staff group whose name
-// matches a rule's pattern must grant that side's marker. Usernames
-// (preferred_username) are immutable: editUsernameAllowed must be false, and
-// the LDAP provider is read-only.
+// a realm role. A queue group the realm file does not define (a new
+// directory group) carries no marker, so every /staff group under a rule's
+// prefix must be one of its queues and grant that side's marker. A marker
+// comes only from its queue groups: never through composites, the default
+// role, another group or a realm-file user. Usernames (preferred_username)
+// are immutable: editUsernameAllowed must be false, and the LDAP provider is
+// read-only.
 export const SOD_RULES = [
-  { id: "cmp", what: "compliance maker and checker queues",
-    maker: { role: "sod_cmp_maker", groups: /^fbx-cmp-([a-z]+-onboarding-l1|review-l1)$/ },
-    checker: { role: "sod_cmp_checker", groups: /^fbx-cmp-([a-z]+-mlro|tr-compliance-officer|review-l2)$/ } },
-  { id: "pay", what: "payment operations and supervisor queues",
+  { id: "cmp", what: "compliance maker and checker queues", prefix: "fbx-cmp-",
+    maker: { role: "sod_cmp_maker", groups: /^fbx-cmp-([a-z0-9]+(-[a-z0-9]+)*-onboarding-l1|review-l1)$/ },
+    checker: { role: "sod_cmp_checker", groups: /^fbx-cmp-([a-z0-9]+(-[a-z0-9]+)*-mlro|tr-compliance-officer|review-l2)$/ } },
+  { id: "pay", what: "payment operations and supervisor queues", prefix: "fbx-pay-",
     maker: { role: "sod_pay_maker", groups: /^fbx-pay-(tr-fast-ops|ops-l1)$/ },
     checker: { role: "sod_pay_checker", groups: /^fbx-pay-(tr-fast-supervisor|ops-l2)$/ } }
 ];
@@ -505,6 +508,27 @@ export function staffSignInErrors(realm, registry) {
         if (p === `/staff/${name}` && side.groups.test(name) && !own.has(side.role)) errs.add(`group ${p} is one of the ${rule.what} and must grant realm role ${side.role}; without it the separation check does not see its members`);
       }
       if (own.has(rule.maker.role) && own.has(rule.checker.role)) errs.add(`group ${p} grants both ${rule.maker.role} and ${rule.checker.role}; a group is one side of the ${rule.what} only`);
+      if (p === `/staff/${name}` && name.startsWith(rule.prefix) && !rule.maker.groups.test(name) && !rule.checker.groups.test(name)) {
+        errs.add(`group ${p} is under the ${rule.prefix}* prefix but matches neither side of the ${rule.what}; add it to SOD_RULES or rename it, or the separation check does not see its members`);
+      }
+    }
+  }
+  // A marker comes only from its queue groups, granted directly: never through
+  // a role's composites (the default role's would deny every user of the other
+  // side), another group or a realm-file user.
+  const markerReached = (seeds) => { const seen = reach(seeds); return SOD_ROLES.filter((r) => seen.has(roleKey(null, r))); };
+  const sideOf = (marker) => SOD_RULES.flatMap((r) => [r.maker, r.checker]).find((x) => x.role === marker);
+  for (const r of roleDefs) {
+    for (const m of markerReached(compositesOf(r)).filter((x) => x !== r.name)) {
+      errs.add(`${r.name === defaultRole ? "realm: default role" : "realm role"} ${r.name} reaches marker role ${m} through its composites; markers come only from their /staff/fbx-* queue groups`);
+    }
+  }
+  const groupsOf = (gs, parent = "") => (gs || []).flatMap((g) => { const p = g.path || `${parent}/${g.name}`; return [[p, g], ...groupsOf(g.subGroups, p)]; });
+  for (const [p, g] of groupsOf(realm.groups)) {
+    const name = p.split("/").pop();
+    const direct = new Set((g.realmRoles || []));
+    for (const m of markerReached(roleSeeds(g))) {
+      if (!(p === `/staff/${name}` && sideOf(m).groups.test(name) && direct.has(m))) errs.add(`group ${p} reaches marker role ${m}; markers come only from their /staff/fbx-* queue groups, granted directly`);
     }
   }
   // A user of the realm file is a local user, not one of the directory, so it
@@ -515,6 +539,7 @@ export function staffSignInErrors(realm, registry) {
   for (const u of realm.users || []) {
     if (u.serviceAccountClientId) continue;
     const seeds = [...roleSeeds(u), ...(u.groups || []).flatMap((p) => groupSeeds.get(p) || [])];
+    for (const m of markerReached(seeds)) errs.add(`user ${u.username} holds marker role ${m} directly, through composites or through a group; realm-file users are local, and markers come only from their /staff/fbx-* queue groups`);
     for (const s of staffReached(seeds)) errs.add(`user ${u.username} holds staff role ${s}, directly, through composites or through a group; staff roles come only from the directory's /staff/fbx-* groups, never from a realm-file user`);
   }
   if (realm.resetCredentialsFlow !== STAFF_RESET_FLOW) {
