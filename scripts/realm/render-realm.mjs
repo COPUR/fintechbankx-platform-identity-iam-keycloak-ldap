@@ -46,7 +46,9 @@ const staffGroups = [
   ["fbx-pay-tr-fast-ops", ["sod_pay_maker"]],
   ["fbx-pay-ops-l1", ["sod_pay_maker"]],
   ["fbx-pay-tr-fast-supervisor", ["sod_pay_checker"]],
-  ["fbx-pay-ops-l2", ["sod_pay_checker"]]
+  ["fbx-pay-ops-l2", ["sod_pay_checker"]],
+  ["fbx-cmp-tr-fraud-l1", ["sod_fraud_maker"]],
+  ["fbx-cmp-tr-fraud-l2", ["sod_fraud_checker"]]
 ];
 
 const audienceMappers = (audiences) => audiences.map((aud) => ({

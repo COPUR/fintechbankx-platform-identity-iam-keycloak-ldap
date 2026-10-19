@@ -381,6 +381,18 @@
         "description": "Separation-of-duties marker: checker side of the payment operations and supervisor queues. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.",
         "composite": false,
         "clientRole": false
+      },
+      {
+        "name": "sod_fraud_maker",
+        "description": "Separation-of-duties marker: maker side of the fraud analyst and senior queues. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "sod_fraud_checker",
+        "description": "Separation-of-duties marker: checker side of the fraud analyst and senior queues. Granted only by its queue groups; a user with both sides of a rule is denied sign-in.",
+        "composite": false,
+        "clientRole": false
       }
     ]
   },
@@ -529,6 +541,24 @@
           ],
           "attributes": {},
           "subGroups": []
+        },
+        {
+          "name": "fbx-cmp-tr-fraud-l1",
+          "path": "/staff/fbx-cmp-tr-fraud-l1",
+          "realmRoles": [
+            "sod_fraud_maker"
+          ],
+          "attributes": {},
+          "subGroups": []
+        },
+        {
+          "name": "fbx-cmp-tr-fraud-l2",
+          "path": "/staff/fbx-cmp-tr-fraud-l2",
+          "realmRoles": [
+            "sod_fraud_checker"
+          ],
+          "attributes": {},
+          "subGroups": []
         }
       ]
     },
@@ -576,6 +606,13 @@
           "flowAlias": "fbx-staff-browser sod pay",
           "requirement": "CONDITIONAL",
           "priority": 40,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-staff-browser sod fraud",
+          "requirement": "CONDITIONAL",
+          "priority": 50,
           "userSetupAllowed": false
         }
       ]
@@ -770,6 +807,38 @@
       ]
     },
     {
+      "alias": "fbx-staff-browser sod fraud",
+      "description": "Deny access to a user in both the fraud analyst and senior queues (sod_fraud_maker and sod_fraud_checker)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser has sod_fraud_maker"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-staff-browser has sod_fraud_checker"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
       "alias": "fbx-reset-credentials",
       "description": "Reset credentials (the built-in flow), with the staff and queue checks for staff channel clients after the e-mail step",
       "providerId": "basic-flow",
@@ -809,6 +878,13 @@
           "flowAlias": "fbx-reset-credentials sod pay",
           "requirement": "CONDITIONAL",
           "priority": 32,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticatorFlow": true,
+          "flowAlias": "fbx-reset-credentials sod fraud",
+          "requirement": "CONDITIONAL",
+          "priority": 33,
           "userSetupAllowed": false
         },
         {
@@ -897,6 +973,46 @@
           "priority": 30,
           "userSetupAllowed": false,
           "authenticatorConfig": "fbx-reset-credentials has sod_pay_checker"
+        },
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "fbx-reset-credentials sod fraud",
+      "description": "Deny access to a user in both the fraud analyst and senior queues (sod_fraud_maker and sod_fraud_checker)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-client-scope",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials staff channel"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials has sod_fraud_maker"
+        },
+        {
+          "authenticator": "conditional-user-role",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false,
+          "authenticatorConfig": "fbx-reset-credentials has sod_fraud_checker"
         },
         {
           "authenticator": "deny-access-authenticator",
@@ -1102,6 +1218,20 @@
       }
     },
     {
+      "alias": "fbx-staff-browser has sod_fraud_maker",
+      "config": {
+        "condUserRole": "sod_fraud_maker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-staff-browser has sod_fraud_checker",
+      "config": {
+        "condUserRole": "sod_fraud_checker",
+        "negate": "false"
+      }
+    },
+    {
       "alias": "fbx-reset-credentials has sod_cmp_maker",
       "config": {
         "condUserRole": "sod_cmp_maker",
@@ -1126,6 +1256,20 @@
       "alias": "fbx-reset-credentials has sod_pay_checker",
       "config": {
         "condUserRole": "sod_pay_checker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials has sod_fraud_maker",
+      "config": {
+        "condUserRole": "sod_fraud_maker",
+        "negate": "false"
+      }
+    },
+    {
+      "alias": "fbx-reset-credentials has sod_fraud_checker",
+      "config": {
+        "condUserRole": "sod_fraud_checker",
         "negate": "false"
       }
     }
