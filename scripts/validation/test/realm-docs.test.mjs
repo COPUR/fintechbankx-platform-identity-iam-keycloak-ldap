@@ -101,6 +101,17 @@ test("the remaining manage-members sign-off card stays open and no security-team
   assert.doesNotMatch(text, /signed off by/i);
 });
 
+test("the manage-members residual risk is accepted until go-live only, with the identity-link service as a go-live item", () => {
+  const text = paragraph("Owner decision (accepted until go-live");
+  assert.match(text, /accepted until go-live by the project owner/);
+  assert.match(text, /2026-10-19/);
+  assert.match(text, /"Accept until go-live"/);
+  assert.match(text, /does not extend to production/);
+  assert.match(text, /identity-link service[^.]*must replace[^.]*`manage-members`/);
+  assert.match(text, /Go-live item/);
+  assert.match(text, /not a security-team sign-off/);
+});
+
 // Counts and lists in REALM_AS_CODE.md follow the client registry
 // (realm/service-clients.json) and the realm import ExternalSecret.
 const registry = JSON.parse(fs.readFileSync(path.join(root, "realm/service-clients.json"), "utf8"));
