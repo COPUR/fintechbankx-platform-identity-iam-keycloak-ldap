@@ -1069,7 +1069,7 @@ test("staff web signs in only users with a staff role: browser flow fbx-staff-br
   const steps = (alias) => flowOf(realm, alias).authenticationExecutions.map((e) => `${e.requirement} ${e.authenticatorFlow ? `flow:${e.flowAlias}` : e.authenticator}`);
   assert.equal(flowOf(realm, STAFF_FLOW).topLevel, true);
   assert.deepEqual(steps(STAFF_FLOW), [`REQUIRED flow:${STAFF_FLOW} sign-in`, `CONDITIONAL flow:${STAFF_FLOW} staff only`,
-    `CONDITIONAL flow:${STAFF_FLOW} sod cmp`, `CONDITIONAL flow:${STAFF_FLOW} sod pay`]);
+    `CONDITIONAL flow:${STAFF_FLOW} sod cmp`, `CONDITIONAL flow:${STAFF_FLOW} sod pay`, `CONDITIONAL flow:${STAFF_FLOW} sod fraud`]);
   assert.deepEqual(steps(`${STAFF_FLOW} sign-in`), ["ALTERNATIVE auth-cookie", `ALTERNATIVE flow:${STAFF_FLOW} forms`]);
   assert.deepEqual(steps(`${STAFF_FLOW} forms`), ["REQUIRED auth-username-password-form", `CONDITIONAL flow:${STAFF_FLOW} OTP`]);
   assert.deepEqual(steps(`${STAFF_FLOW} OTP`), ["REQUIRED conditional-user-configured", "REQUIRED auth-otp-form"]);
@@ -1088,7 +1088,7 @@ test("staff web signs in only users with a staff role: browser flow fbx-staff-br
   assert.equal(realm.resetCredentialsFlow, RESET_FLOW);
   assert.equal(flowOf(realm, RESET_FLOW).topLevel, true);
   assert.deepEqual(steps(RESET_FLOW), ["REQUIRED reset-credentials-choose-user", "REQUIRED reset-credential-email", `CONDITIONAL flow:${RESET_FLOW} staff only`,
-    `CONDITIONAL flow:${RESET_FLOW} sod cmp`, `CONDITIONAL flow:${RESET_FLOW} sod pay`, "REQUIRED reset-password", `CONDITIONAL flow:${RESET_FLOW} OTP`]);
+    `CONDITIONAL flow:${RESET_FLOW} sod cmp`, `CONDITIONAL flow:${RESET_FLOW} sod pay`, `CONDITIONAL flow:${RESET_FLOW} sod fraud`, "REQUIRED reset-password", `CONDITIONAL flow:${RESET_FLOW} OTP`]);
   assert.deepEqual(steps(`${RESET_FLOW} OTP`), ["REQUIRED conditional-user-configured", "REQUIRED reset-otp"]);
   assert.deepEqual(steps(`${RESET_FLOW} staff only`), ["REQUIRED conditional-client-scope", ...STAFF.map(() => "REQUIRED conditional-user-role"), "REQUIRED deny-access-authenticator"]);
   const cfg = (e) => realm.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig).config;
@@ -2185,7 +2185,7 @@ test("the Job's tpp-onboarding step against a mock admin API passes the complian
 // be in a checker queue group of the same rule.
 // Queue groups grant marker roles; one deny subflow per rule runs after the
 // staff check at sign-in and, for staff channel clients, at password reset.
-const SOD = { cmp: ["sod_cmp_maker", "sod_cmp_checker"], pay: ["sod_pay_maker", "sod_pay_checker"] };
+const SOD = { cmp: ["sod_cmp_maker", "sod_cmp_checker"], pay: ["sod_pay_maker", "sod_pay_checker"], fraud: ["sod_fraud_maker", "sod_fraud_checker"] };
 const staffGroup = (r, name) => r.groups.find((g) => g.name === "staff").subGroups.find((g) => g.name === name);
 
 test("separation of duties: maker and checker queue groups grant marker roles, and one deny subflow per rule runs at sign-in and reset", () => {
@@ -2197,6 +2197,8 @@ test("separation of duties: maker and checker queue groups grant marker roles, a
   for (const g of ["fbx-cmp-ae-mlro", "fbx-cmp-tr-compliance-officer", "fbx-cmp-review-l2"]) assert.deepEqual(grants[g], ["sod_cmp_checker"], g);
   for (const g of ["fbx-pay-tr-fast-ops", "fbx-pay-ops-l1"]) assert.deepEqual(grants[g], ["sod_pay_maker"], g);
   for (const g of ["fbx-pay-tr-fast-supervisor", "fbx-pay-ops-l2"]) assert.deepEqual(grants[g], ["sod_pay_checker"], g);
+  assert.deepEqual(grants["fbx-cmp-tr-fraud-l1"], ["sod_fraud_maker"]);
+  assert.deepEqual(grants["fbx-cmp-tr-fraud-l2"], ["sod_fraud_checker"]);
   const cfg = (e) => realm.authenticatorConfig.find((c) => c.alias === e.authenticatorConfig)?.config;
   const shape = (alias) => flowOf(realm, alias).authenticationExecutions.map((e) => [e.requirement, e.authenticator, cfg(e)]);
   for (const [id, [maker, checker]] of Object.entries(SOD)) {
@@ -2227,11 +2229,16 @@ test("separation of duties: the gate refuses a missing marker role, a queue grou
     ["sod condition on another role", (r) => { r.authenticatorConfig.find((c) => c.alias === `${STAFF_FLOW} has sod_pay_maker`).config.condUserRole = "banker"; }, flowDiffers],
     // Queue names outside the patterns would carry no marker demand (fail-open).
     ["an unknown group under fbx-cmp-", (r) => { r.groups.find((g) => g.name === "staff").subGroups.push({ name: "fbx-cmp-ae-reviewer", path: "/staff/fbx-cmp-ae-reviewer", realmRoles: [], subGroups: [] }); },
-      "group /staff/fbx-cmp-ae-reviewer is under the fbx-cmp-* prefix but matches neither side"],
+      "group /staff/fbx-cmp-ae-reviewer is under the fbx-cmp-* prefix but matches neither side of the compliance maker and checker queues or the fraud analyst and senior queues"],
     ["an unknown group under fbx-pay-", (r) => { r.groups.find((g) => g.name === "staff").subGroups.push({ name: "fbx-pay-sepa-ops", path: "/staff/fbx-pay-sepa-ops", realmRoles: ["sod_pay_maker"], subGroups: [] }); },
       "group /staff/fbx-pay-sepa-ops is under the fbx-pay-* prefix but matches neither side"],
     ...["fbx-cmp-sa2-mlro", "fbx-cmp-ae-dxb-mlro"].map((n) => [`checker queue ${n} without its marker`, (r) => { r.groups.find((g) => g.name === "staff").subGroups.push({ name: n, path: `/staff/${n}`, realmRoles: [], subGroups: [] }); },
       `group /staff/${n} is one of the compliance maker and checker queues and must grant realm role sod_cmp_checker`]),
+    ["fraud senior queue without its marker", (r) => { staffGroup(r, "fbx-cmp-tr-fraud-l2").realmRoles = []; }, "group /staff/fbx-cmp-tr-fraud-l2 is one of the fraud analyst and senior queues and must grant realm role sod_fraud_checker"],
+    ["a new jurisdiction's fraud analyst queue without its marker", (r) => { r.groups.find((g) => g.name === "staff").subGroups.push({ name: "fbx-cmp-ae-fraud-l1", path: "/staff/fbx-cmp-ae-fraud-l1", realmRoles: [], subGroups: [] }); },
+      "group /staff/fbx-cmp-ae-fraud-l1 is one of the fraud analyst and senior queues and must grant realm role sod_fraud_maker"],
+    ["a fraud queue granting a compliance marker", (r) => { staffGroup(r, "fbx-cmp-tr-fraud-l1").realmRoles = ["sod_fraud_maker", "sod_cmp_checker"]; }, "group /staff/fbx-cmp-tr-fraud-l1 reaches marker role sod_cmp_checker"],
+    ["fraud sod subflow disabled", (r) => { flowOf(r, STAFF_FLOW).authenticationExecutions.find((e) => e.flowAlias === `${STAFF_FLOW} sod fraud`).requirement = "DISABLED"; }, flowDiffers],
     // Markers come only from their queue groups.
     ["a realm role with a marker in its composites", (r) => { Object.assign(r.roles.realm.find((x) => x.name === "auditor"), { composite: true, composites: { realm: ["sod_cmp_maker"] } }); },
       "realm role auditor reaches marker role sod_cmp_maker through its composites"],
